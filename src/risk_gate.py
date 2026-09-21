@@ -7,7 +7,7 @@ to guarantee P(error | exit) <= eps.
 from dataclasses import dataclass
 from enum import Enum
 import math
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 
@@ -55,61 +55,80 @@ class ConformalRiskGate:
         epsilon: float = 0.05,
         delta: float = 0.05,
         default_threshold: float = 0.85,
+        bound_type: str = "empirical_bernstein",
     ):
         """
         Args:
             epsilon: Maximum allowed error rate on fast-path exits (e.g. 0.05 for 5% max error).
             delta: Confidence parameter for Upper Confidence Bound (e.g. 0.05 for 95% confidence).
             default_threshold: Default confidence threshold (1 - lambda) if uncalibrated.
+            bound_type: Bound method - 'empirical_bernstein' or 'hoeffding'.
         """
         self.epsilon = epsilon
         self.delta = delta
         self.confidence_threshold = default_threshold
+        self.bound_type = bound_type
         self.is_calibrated = False
         self.calibrated_lambda = 1.0 - default_threshold
-        self.calibration_stats: Dict[str, float] = {}
+        self.calibration_stats: Dict[str, Any] = {}
+
+    def _compute_ucb(self, errors_exited: np.ndarray, n_exit: int) -> float:
+        """Computes Upper Confidence Bound on empirical risk using selected bound."""
+        if n_exit == 0:
+            return 1.0
+        emp_risk = float(np.mean(errors_exited))
+
+        if self.bound_type == "empirical_bernstein" and n_exit > 2:
+            var_emp = float(np.var(errors_exited, ddof=1))
+            log_term = math.log(2.0 / self.delta)
+            term1 = math.sqrt(2.0 * var_emp * log_term / n_exit)
+            term2 = 7.0 * log_term / (3.0 * (n_exit - 1))
+            return min(1.0, emp_risk + term1 + term2)
+        else:
+            # Hoeffding inequality: emp_risk + sqrt(ln(1/delta) / (2 * n_exit))
+            log_term = math.log(1.0 / self.delta)
+            return min(1.0, emp_risk + math.sqrt(log_term / (2.0 * n_exit)))
 
     def calibrate(
         self,
         confidences: np.ndarray,
         predictions: np.ndarray,
         ground_truth: np.ndarray,
+        target_epsilon: Optional[float] = None,
     ) -> float:
         """
-        Calibrates the exit threshold lambda* on a calibration set D_cal = {(x_i, y_i)}_{i=1}^N.
+        Calibrates the exit threshold lambda* on a calibration set D_cal = {(x_i, y_i)}_{i=1}^N:
+            lambda* = sup { lambda in [0, 1] : R_UCB(lambda) <= epsilon }
 
         Args:
             confidences: Array of predicted top-1 confidences max_y f(x_i)_y in [0, 1].
             predictions: Array of top-1 predicted label indices.
             ground_truth: Array of true label indices.
+            target_epsilon: Optional override for tolerance epsilon.
 
         Returns:
             Calibrated confidence threshold (1 - lambda*).
         """
+        eps = target_epsilon if target_epsilon is not None else self.epsilon
         n_samples = len(confidences)
         if n_samples == 0:
             return self.confidence_threshold
 
         errors = (predictions != ground_truth).astype(float)
-        # Search candidate thresholds from conservative (high conf) to permissive (low conf)
-        threshold_candidates = np.linspace(0.50, 0.99, 100)
-        best_thresh = 0.99  # Most conservative fallback
+        # Search candidate thresholds from fine resolution in [0.50, 0.999]
+        threshold_candidates = np.linspace(0.50, 0.999, 500)
+        best_thresh = 0.999  # Conservative default
 
         for thresh in reversed(threshold_candidates):
             exit_mask = confidences >= thresh
-            n_exit = np.sum(exit_mask)
-
+            n_exit = int(np.sum(exit_mask))
             if n_exit == 0:
                 continue
 
-            # Empirical error rate on exited samples
-            emp_risk = np.sum(errors[exit_mask]) / n_exit
+            errors_exited = errors[exit_mask]
+            ucb = self._compute_ucb(errors_exited, n_exit)
 
-            # Upper Confidence Bound via Hoeffding inequality
-            # UCB = emp_risk + sqrt(ln(1 / delta) / (2 * n_exit))
-            ucb = emp_risk + math.sqrt(math.log(1.0 / self.delta) / (2.0 * max(1, n_exit)))
-
-            if ucb <= self.epsilon:
+            if ucb <= eps:
                 best_thresh = thresh
                 break
 
@@ -119,14 +138,81 @@ class ConformalRiskGate:
 
         exit_mask = confidences >= best_thresh
         n_exit = int(np.sum(exit_mask))
+        errors_exited = errors[exit_mask] if n_exit > 0 else np.array([])
+        emp_risk = float(np.mean(errors_exited)) if n_exit > 0 else 0.0
+        ucb = self._compute_ucb(errors_exited, n_exit) if n_exit > 0 else 1.0
+
         self.calibration_stats = {
             "cal_samples": n_samples,
             "cal_exited": n_exit,
             "cal_coverage": float(n_exit / n_samples) if n_samples > 0 else 0.0,
-            "cal_emp_risk": float(np.sum(errors[exit_mask]) / max(1, n_exit)),
+            "cal_emp_risk": emp_risk,
+            "cal_ucb": ucb,
             "calibrated_threshold": self.confidence_threshold,
+            "epsilon": eps,
+            "delta": self.delta,
+            "bound_type": self.bound_type,
         }
         return self.confidence_threshold
+
+    def calibrate_multi_tolerance(
+        self,
+        confidences: np.ndarray,
+        predictions: np.ndarray,
+        ground_truth: np.ndarray,
+        tolerances: Optional[List[float]] = None,
+    ) -> Dict[float, Dict[str, Any]]:
+        """
+        Calibrates thresholds across multiple risk tolerances (e.g. 0.001, 0.005, 0.01, 0.05, 0.10).
+        """
+        if tolerances is None:
+            tolerances = [0.001, 0.005, 0.01, 0.05, 0.10]
+
+        results = {}
+        for eps in tolerances:
+            thresh = self.calibrate(confidences, predictions, ground_truth, target_epsilon=eps)
+            results[eps] = dict(self.calibration_stats)
+        return results
+
+    def evaluate_test_split(
+        self,
+        confidences: np.ndarray,
+        predictions: np.ndarray,
+        ground_truth: np.ndarray,
+        threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Evaluates calibrated policy on held-out test split:
+          - Fast-path coverage: proportion of queries exiting at Step 1
+          - Empirical fast-path error rate: P(error | EXIT)
+          - Conformal guarantee satisfied: empirical error <= epsilon
+        """
+        thresh = threshold if threshold is not None else self.confidence_threshold
+        n_samples = len(confidences)
+        if n_samples == 0:
+            return {"test_coverage": 0.0, "test_selective_error": 0.0, "bound_satisfied": True}
+
+        errors = (predictions != ground_truth).astype(float)
+        exit_mask = confidences >= thresh
+        n_exit = int(np.sum(exit_mask))
+
+        coverage = float(n_exit / n_samples)
+        if n_exit > 0:
+            sel_error = float(np.sum(errors[exit_mask]) / n_exit)
+        else:
+            sel_error = 0.0
+
+        satisfied = bool(sel_error <= self.epsilon)
+        return {
+            "test_samples": n_samples,
+            "test_exited": n_exit,
+            "test_coverage": coverage,
+            "test_selective_error": sel_error,
+            "threshold": thresh,
+            "target_epsilon": self.epsilon,
+            "bound_satisfied": satisfied,
+        }
+
 
     def evaluate_logits(
         self,

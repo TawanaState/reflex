@@ -1,0 +1,32 @@
+{
+  "hardware": "NVIDIA GB10 (Blackwell SoC, 121GB Unified)",
+  "prompt_length_tokens": 190,
+  "num_trials": 15,
+  "prefill_latency_ms": {
+    "mean": 236.71568806966147,
+    "p50": 235.4081573486328,
+    "p95": 241.48534698486327
+  },
+  "step1_latency_ms": {
+    "mean": 76.76471201578777,
+    "p50": 76.56883239746094,
+    "p95": 78.20709609985352
+  },
+  "expansion_64_reused_ms": {
+    "mean": 123.85633188883463,
+    "p50": 122.44684600830078,
+    "p95": 130.12893142700193
+  },
+  "expansion_128_reused_ms": {
+    "mean": 146.5421569824219,
+    "p50": 145.1367950439453,
+    "p95": 152.48908691406248
+  },
+  "expansion_64_recomputed_ms": {
+    "mean": 358.42682291666665,
+    "p50": 357.7929382324219,
+    "p95": 364.2915557861328
+  },
+  "redundant_penalty_avoided_ms": 234.57049102783202,
+  "expansion_speedup_factor": 2.8938917974606837
+}

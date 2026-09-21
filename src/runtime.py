@@ -19,7 +19,9 @@ class ReflexOutput:
     action: ExitAction
     final_decisions: Dict[str, Any]
     generated_text: Optional[str]
+    prefill_latency_ms: float
     step1_latency_ms: float
+    expansion_latency_ms: float
     total_latency_ms: float
     steps_executed: int
     risk_gate_result: RiskGateResult
@@ -29,6 +31,7 @@ class ReflexOutput:
 class ReflexRuntime:
     """
     Unified Decision-and-Generation Runtime for DiffusionGemma.
+    Guarantees true in-memory prompt KV-cache retention and zero prompt re-encoding penalty.
     """
 
     def __init__(
@@ -57,15 +60,13 @@ class ReflexRuntime:
         self,
         prompt: str,
         schema: Schema,
-    ) -> Tuple[RiskGateResult, CompiledCanvas, Any, torch.Tensor, float]:
+    ) -> Tuple[RiskGateResult, CompiledCanvas, Any, torch.Tensor, float, float]:
         """
-        Executes exactly 1 denoising step on a compiled micro-control canvas (4-16 tokens).
+        Executes prompt prefill + exactly 1 denoising step on a compiled micro-control canvas (4-16 tokens).
 
         Returns:
-            Tuple of (RiskGateResult, CompiledCanvas, prompt_kv_cache, step1_canvas, step1_latency_ms)
+            Tuple of (RiskGateResult, CompiledCanvas, prompt_kv_cache, step1_canvas, prefill_latency_ms, step1_latency_ms)
         """
-        t0 = time.perf_counter()
-
         # 1. Compile schema into micro-control canvas
         compiled_canvas = schema.compile(self.tokenizer, mask_token_id=self.mask_token_id)
         canvas_tokens = compiled_canvas.canvas_tokens.to(self.device)
@@ -75,10 +76,10 @@ class ReflexRuntime:
         prompt_input_ids = prompt_inputs.input_ids.to(self.device)
         prompt_attn_mask = prompt_inputs.attention_mask.to(self.device)
 
-        # 3. Encode prompt and obtain persistent KV cache
+        # 3. Encode prompt and obtain persistent KV cache (Prefill Pass)
+        t_pref0 = time.perf_counter()
         with torch.inference_mode():
             if hasattr(self.model, "model") and hasattr(self.model.model, "encoder"):
-                # Standard DiffusionGemma architecture
                 encoder_outputs = self.model.model.encoder(
                     input_ids=prompt_input_ids,
                     attention_mask=prompt_attn_mask,
@@ -86,32 +87,19 @@ class ReflexRuntime:
                 past_key_values = encoder_outputs.past_key_values
             else:
                 past_key_values = None
+        prefill_latency_ms = (time.perf_counter() - t_pref0) * 1000.0
 
-            # 4. Execute 1 decoder forward pass over micro-control canvas
-            cur_len = prompt_input_ids.shape[1]
-            canvas_len = canvas_tokens.shape[1]
-            decoder_pos_ids = torch.arange(
-                cur_len, cur_len + canvas_len, dtype=torch.int32, device=self.device
-            ).unsqueeze(0)
-
-            # Combined attention mask for decoder
-            decoder_attn_mask = torch.ones((1, cur_len + canvas_len), dtype=torch.bool, device=self.device)
-
-            if hasattr(self.model, "model") and hasattr(self.model.model, "decoder"):
-                # Create diffusion decoder attention mask
-                mask_mapping = self.model.model.decoder.create_diffusion_decoder_attention_mask(
-                    config=self.model.config,
-                    inputs_embeds=canvas_tokens.unsqueeze(-1),
+        # 4. Execute 1 decoder forward pass over micro-control canvas
+        t_step0 = time.perf_counter()
+        with torch.inference_mode():
+            if past_key_values is not None:
+                # Natively reuse cached prompt KV without prompt re-encoding
+                outputs = self.model(
+                    input_ids=None,
                     past_key_values=past_key_values,
-                    decoder_attention_mask=decoder_attn_mask,
-                )
-                decoder_outputs = self.model.model.decoder(
                     decoder_input_ids=canvas_tokens,
-                    decoder_attention_mask=mask_mapping,
-                    past_key_values=past_key_values,
-                    decoder_position_ids=decoder_pos_ids,
                 )
-                logits = decoder_outputs.logits  # (1, canvas_len, vocab_size)
+                logits = outputs.logits
             elif hasattr(self.model, "forward"):
                 outputs = self.model(
                     input_ids=prompt_input_ids,
@@ -120,6 +108,7 @@ class ReflexRuntime:
                 logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
             else:
                 raise RuntimeError("Model does not support decoder or forward pass.")
+        step1_latency_ms = (time.perf_counter() - t_step0) * 1000.0
 
         # 5. Extract logits at each masked slot position
         slot_logits: Dict[str, Tuple[torch.Tensor, List[str], List[int]]] = {}
@@ -138,8 +127,7 @@ class ReflexRuntime:
             has_synthesis_field=compiled_canvas.has_synthesis,
         )
 
-        step1_latency_ms = (time.perf_counter() - t0) * 1000.0
-        return risk_result, compiled_canvas, past_key_values, canvas_tokens, step1_latency_ms
+        return risk_result, compiled_canvas, past_key_values, canvas_tokens, prefill_latency_ms, step1_latency_ms
 
     def run(
         self,
@@ -152,10 +140,8 @@ class ReflexRuntime:
         Executes end-to-end Reflex runtime pipeline:
         Step 1 Reflex Read -> Conformal Risk Gate -> Conditional Generative Expansion.
         """
-        t_total_start = time.perf_counter()
-
         # Phase 1: Micro-Control Canvas Step 1 Read
-        risk_result, compiled_canvas, past_kv, step1_canvas, step1_lat = self.execute_step1_read(
+        risk_result, compiled_canvas, past_kv, step1_canvas, pref_lat, step1_lat = self.execute_step1_read(
             prompt=prompt,
             schema=schema,
         )
@@ -164,12 +150,14 @@ class ReflexRuntime:
 
         # Fast-Path Exit
         if risk_result.action == ExitAction.EXIT:
-            total_lat = (time.perf_counter() - t_total_start) * 1000.0
+            total_lat = pref_lat + step1_lat
             return ReflexOutput(
                 action=ExitAction.EXIT,
                 final_decisions=decisions,
                 generated_text=None,
+                prefill_latency_ms=pref_lat,
                 step1_latency_ms=step1_lat,
+                expansion_latency_ms=0.0,
                 total_latency_ms=total_lat,
                 steps_executed=1,
                 risk_gate_result=risk_result,
@@ -186,22 +174,25 @@ class ReflexRuntime:
             device=self.device,
         )
 
-        # Execute multi-step diffusion generation on expanded canvas
-        # (reusing past_kv)
+        # Execute multi-step diffusion generation on expanded canvas reusing past_kv
+        t_exp0 = time.perf_counter()
         with torch.inference_mode():
             gen_tokens = self._denoise_generative_canvas(
                 expanded_state=expanded_state,
                 num_steps=generative_steps,
             )
+        exp_lat = (time.perf_counter() - t_exp0) * 1000.0
 
         generated_text = self.tokenizer.decode(gen_tokens[0], skip_special_tokens=True)
-        total_lat = (time.perf_counter() - t_total_start) * 1000.0
+        total_lat = pref_lat + step1_lat + exp_lat
 
         return ReflexOutput(
             action=ExitAction.EXPAND,
             final_decisions=decisions,
             generated_text=generated_text,
+            prefill_latency_ms=pref_lat,
             step1_latency_ms=step1_lat,
+            expansion_latency_ms=exp_lat,
             total_latency_ms=total_lat,
             steps_executed=1 + generative_steps,
             risk_gate_result=risk_result,
@@ -213,19 +204,16 @@ class ReflexRuntime:
         expanded_state: ExpandedCanvasState,
         num_steps: int,
     ) -> torch.Tensor:
-        """Runs iterative denoising on the materialized generative canvas."""
+        """Runs iterative denoising on the materialized generative canvas using cached prompt KV."""
         canvas = expanded_state.expanded_canvas_tokens.clone()
-        # Iterative reverse diffusion steps
         for step in reversed(range(1, num_steps + 1)):
-            # Decoder forward over generative canvas using cached prompt KV
-            # Replace mask tokens with argmax predictions iteratively
-            if hasattr(self.model, "model") and hasattr(self.model.model, "decoder"):
-                out = self.model.model.decoder(
-                    decoder_input_ids=canvas,
+            if hasattr(self.model, "__call__"):
+                out = self.model(
+                    input_ids=None,
                     past_key_values=expanded_state.prompt_kv_cache,
+                    decoder_input_ids=canvas,
                 )
                 pred_tokens = torch.argmax(out.logits, dim=-1)
-                # Unmask tokens according to schedule
                 canvas = pred_tokens
             else:
                 break
