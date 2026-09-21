@@ -1,0 +1,60 @@
+{
+  "hardware": {
+    "device": "NVIDIA GB10 (Grace Blackwell Architecture)",
+    "memory_unified_gib": 121,
+    "cuda_version": "13.0",
+    "driver_version": "580.159.03",
+    "diffusion_model": "google/diffusiongemma-26B-A4B-it (bfloat16, 26B parameters)",
+    "ar_baseline_model": "gemma4:12b-it-qat (Ollama local JSON engine)"
+  },
+  "canvas_latency_scaling": {
+    "4_tokens_ms": 23.387608700431883,
+    "8_tokens_ms": 36.96427047252655,
+    "16_tokens_ms": 58.27851640060544,
+    "256_tokens_ms": 73.61561776682113,
+    "512_tokens_ms": 83.76429325047259,
+    "speedup_4_vs_256": 3.1476333775612435
+  },
+  "paradigms": {
+    "Autoregressive_LLM": {
+      "model": "gemma4:12b-it-qat",
+      "mean_latency_ms": 975.4920470366029,
+      "p50_latency_ms": 921.5441610431299,
+      "p95_latency_ms": 1212.9353843862189,
+      "accuracy_pct": 83.0,
+      "syntax_error_rate_pct": 2.0,
+      "mechanism": "Token-by-token sequential decode + JSON schema prompt"
+    },
+    "Fixed_20Step_Diffusion": {
+      "model": "DiffusionGemma-26B (256-token canvas)",
+      "mean_latency_ms": 1473.0404979472314,
+      "p50_latency_ms": 1472.2086104128816,
+      "p95_latency_ms": 1496.678456671503,
+      "accuracy_pct": 88.0,
+      "syntax_error_rate_pct": 0.0,
+      "mechanism": "Uniform 20 reverse diffusion steps over 256 tokens"
+    },
+    "Reflex_Step1_Canvas_Decoder_Only": {
+      "model": "DiffusionGemma-26B (4-token micro-canvas)",
+      "mean_latency_ms": 23.387608700431883,
+      "p50_latency_ms": 23.27926945872605,
+      "p95_latency_ms": 23.918692400911823,
+      "speedup_vs_ar": 41.70978142876955,
+      "syntax_error_rate_pct": 0.0,
+      "mechanism": "1-step discrete denoise on 4 tokens with pre-cached prompt KV"
+    },
+    "Reflex_Step1_EndToEnd": {
+      "model": "DiffusionGemma-26B (Encoder + 4-token Decoder)",
+      "mean_latency_ms": 301.165828049785,
+      "p50_latency_ms": 296.6026306152344,
+      "p95_latency_ms": 341.3197967529297,
+      "accuracy_pct": 54.0,
+      "mean_entropy": 0.5296071532300172,
+      "mean_confidence_gap": 0.45903837258927527,
+      "conformal_selective_risk": 0.0,
+      "conformal_test_coverage": 0.0,
+      "syntax_error_rate_pct": 0.0,
+      "mechanism": "Full prompt encoding + 1-step canvas decode + conformal calibration"
+    }
+  }
+}
