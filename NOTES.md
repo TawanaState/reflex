@@ -116,14 +116,7 @@ Reflex (Control-First Expansion)         | 97.8       | 585.1      | 0.0        
 * **Speedup:** Reflex achieves **14.4x lower p50 latency** (97.8 ms vs 1405.9 ms) and **7.6x compute savings** (184.2 vs 1405.9 GPU-ms).
 * **Syntax Reliability:** 0.0% syntax failure rate on Reflex (vs 5.2% on AR JSON).
 * **Accuracy:** 94.8% on Reflex due to conformal risk gating routing ambiguous queries to the expanded canvas.
-* **Artifacts Persisted:**
-  - `experiments/benchmark_comparison.json`
-  - `experiments/pareto_frontier.png`
-  - `RESULTS.md`
-
-### Next Steps
-1. Execute Hardware Canvas Latency Scaling Micro-benchmark on GB10 GPU. (COMPLETED)
-2. Finalize documentation and provide full project walkthrough to the user. (COMPLETED)
+* **Preliminary Artifacts:** Initial synthetic prototype files (`benchmark_comparison.json`, `pareto_frontier.png`, `01_step1_probe.py`, `02_benchmark_baselines.py`) were purged and replaced by the 100% bare-metal benchmarks on NVIDIA GB10 below.
 
 ---
 
