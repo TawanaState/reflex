@@ -1,227 +1,146 @@
-# MISSION BRIEF: Lead Autonomous Systems & ML Research Engineer
+## Project Reflex: Open-Source Serving & Public Release Packaging
 
-## Project Reflex: Phase 2 — Real Calibration, SFT & Unified Adaptive Diffusion Runtime
+You are the **Lead ML Systems Engineer** tasked with preparing **Project Reflex** for open-source public release. The core research, Phase 0 probes, Step-1 logit extraction, LoRA weights (`models/reflex_lora_v1`), and conformal risk calibration are already validated and working in the repository.
 
-You are the **Lead ML Systems and Research Engineer** on **Project Reflex**. You have full command access inside a Linux DGX Spark environment (~80–90 GB VRAM available, CUDA-enabled, Python, Docker Compose, PyTorch, and vLLM dependencies installed).
-
-The repository is located at `/reflex`. Review `PROPOSAL.md`, `NOTES.md`, and the existing codebase in `src/` and `experiments/`.
+Your objective is to turn this research codebase into a clean, reproducible, high-performance public repository that anyone with access to an NVIDIA GPU workstation (DGX, A100, H100, or modern 80GB+ VRAM machine) can clone, configure via `.env`, and launch as an **OpenAI-compatible inference server**.
 
 ---
 
-### SITUATION REPORT & CURRENT BASELINE
+### NON-NEGOTIABLE OPERATIONAL DIRECTIVES
 
-An initial Phase 0/1 feasibility audit was executed in the workspace:
-
-1. **Initial Verification:** `src/canvas.py`, `src/risk_gate.py`, and `src/expansion.py` establish the micro-control canvas layout and conformal risk gating logic.
-
-
-2. **Empirical Grounding:** Micro-benchmarks (`experiments/micro_benchmark_canvas_latency.py`) and probe spikes (`experiments/01_step1_real_spike.py`, `02_benchmark_real_baselines.py`) demonstrated real GPU latency scaling across canvas widths (confirming that an 8–16 token canvas runs in ~88–108 ms vs. 640 ms for a 512-token canvas).
-
-
-3. **The Core Deficit:** The system is currently operating as an **orchestrated Python interposer over stock/probe weights**. The multi-task calibrated objective ($\mathcal{L}_{\text{Reflex}}$) has not yet been fine-tuned, prompt KV-cache retention across Phase 1 and Phase 2 needs strict GPU-level verification, and evaluations must be expanded to real, multi-domain benchmark corpora.
-
-
-
-Your mission in this session is to **drive Reflex from a verified prototype to a publication-grade, open-source-ready systems artifact**: implementing real fine-tuning (LoRA/SFT), guaranteeing true KV-cache reuse, executing rigorous benchmarks on real downloaded datasets, and proving the thesis without shortcuts.
+1. **Zero Mocking / Zero Fakes:**
+   * Never inject simulated sleep times, synthetic mock predictions, or fake metrics.
+   * All server endpoints, token reads, and tool dispatches must run through the actual PyTorch / Transformers model graph.
+2. **Preserve Validated Artifacts:**
+   * Do **NOT** delete, break, or overwrite existing working experiments (`experiments/`), dataset splits (`data/`), model weights (`models/reflex_lora_v1/`), or result JSONs (`results/` and `experiments/*.json`).
+3. **Patience, Research & Verification:**
+   * Before writing code, inspect existing files (`experiments/01_step1_real_spike.py`, `experiments/test_kv_retention_timing.py`, `train_reflex_lora.py`, and `PROPOSAL.md`).
+   * When integrating tools or OpenAI API schemas, follow official OpenAI API specs and PyTorch best practices.
+   * Run live end-to-end integration tests using the official `openai` Python SDK before declaring any task complete.
 
 ---
 
-### CORE OPERATIONAL DIRECTIVES
+### ARCHITECTURAL REQUIREMENTS & DELIVERABLES
 
-#### 1. Zero Tolerance for Mocked, Simulated, or Synthetic Results
+#### 1. Environment Configuration (`.env` & `src/config.py`)
+Create a standardized `.env.example` and a strict settings loader (`src/config.py` using `pydantic-settings` or `python-dotenv`):
+* `DIFFUSION_GEMMA_PATH`: Path to local model directory or Hugging Face repo ID (e.g., `google/diffusiongemma-26b-it` or NVIDIA FP4/BF16 weights).
+* `REFLEX_LORA_PATH`: Path to the trained LoRA adapter (default: `models/reflex_lora_v1`).
+* `REFLEX_MODE`: Toggle runtime mode:
+  * `reflex`: The full hybrid runtime (sub-150ms Step-1 micro-canvas decision + conformal risk gate + conditional generative expansion).
+  * `vanilla`: Standard DiffusionGemma baseline (fixed multi-step canvas denoising, no early exit).
+* `HOST`: Server bind address (default: `0.0.0.0`).
+* `PORT`: Server port (default: `8000`).
+* `CONFORMAL_EPS`: Operational error tolerance for risk gating (default: `0.02`).
+* `DEVICE`: Target CUDA device (default: `cuda:0`).
+* `MAX_CANVAS_LENGTH`: Maximum generative expansion buffer length (default: `256`).
 
-* **Absolute Prohibition:** Under no circumstances are you to use synthetic random numbers, dummy sleep loops, or simulated accuracy metrics for project conclusions, benchmarks, or paper artifacts.
-* **Ground Truth Only:** Download real datasets via Hugging Face `datasets` or raw repositories. Execute forward passes, evaluate real candidate logits, measure real wall-clock latency with CUDA event synchronizations (`torch.cuda.Event(enable_timing=True)`), and log raw model outputs.
-* **Failure is Acceptable, Faking is Not:** If an empirical run yields poor accuracy, high calibration error, or latency regressions, document the exact failure in `NOTES.md`, diagnose the root cause, and formulate a technical pivot. Never manipulate data to fit a hypothesis.
+#### 2. Dual-Mode Inference Engine (`src/engine.py`)
+Implement a unified runtime engine supporting both modes cleanly:
+* **Mode A (`vanilla`):**
+  * Standard diffusion pipeline: Ingests user prompt, causal encoder caches KV state, runs full 15–25 denoising steps on the generation canvas, and returns text.
+* **Mode B (`reflex`):**
+  * **Phase 1 (The Micro-Control Canvas):**
+    * Allocates a minimal 4-to-16 token canvas (`action: @ \n needs_args: @ \n risk: @`).
+    * Extracts candidate logits exclusively on the masked slots using `logprob_token_ids` in a single forward pass (~110ms).
+    * Evaluates the conformal risk gate ($p_{\text{target}} \ge 1 - \lambda^*$).
+  * **Fast-Path Exit:** If the selected action is atomic/discrete and passes the risk gate, halts at Step 1 and immediately returns the typed action object.
+  * **Phase 2 (Conditional Expansion):** If the selected action requires arguments or the query demands free-form text/reasoning, materializes an expanded generative canvas (64–256 tokens) and unrolls 10–20 denoising steps, reusing the cached prompt KV without re-encoding.
 
-#### 2. Real-Time Engineering Logbook (`NOTES.md`)
+#### 3. Full Modality & Conversation Support
+* **Multi-Turn Context:** The causal encoder processes conversation history (`messages: [{"role": "user", ...}, {"role": "assistant", ...}]`) and retains prompt KV states across turns.
+* **Multimodal Vision:** Support base64 or URL image payloads inside the standard OpenAI message format:
+  ```json
+  {"role": "user", "content": [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]}
 
-* `NOTES.md` is your living engineering journal. You must update it **continuously as you work**—before starting a sub-task, while analyzing outputs, and after running benchmarks.
-* Structure every log entry with:
-* **Timestamp & Objective:** Exact technical goal.
-* **Hypothesis & Prior Art:** Specific papers, PRs, or docs consulted (with links/PR numbers).
-* **Actions & Commands:** Exact scripts run, arguments passed, and system state.
-* **Raw Outputs & Metrics:** Verbatim terminal logs, measured GPU-ms, accuracy/ECE/Brier scores, and VRAM allocations (`nvidia-smi`).
-* **Root Cause & Architectural Decisions:** What failed, why it failed, and how you adjusted your strategy.
-* **Next Steps:** Prioritized immediate tasks.
+    ```
 
+Pass image tensors directly into DiffusionGemma’s vision encoder tower.
 
-
-#### 3. Deep Research First: Stand on the Shoulders of Giants
-
-* Do not re-invent what is already written. Use your internet search and web-scraping capabilities aggressively.
-* **Inspect Key References:**
-* vLLM PR #57250 (`[https://github.com/vllm-project/vllm/pull/57250](https://github.com/vllm-project/vllm/pull/57250)`) and related PRs (#57414, #57416, #57417, #57462, #57589) to study canvas seeding, single-step reads, and token logprob extraction.
-
-
-* Google’s official `DiffusionGemma` implementation (Transformers documentation and model cards).
-
-
-* Conformal Risk Control literature (Angelopoulos et al., *Conformal Thinking* at ICML 2026) for calibration bounds.
+* **Tool Calling / Function Routing:**
+* Accept standard OpenAI `tools: [{"type": "function", "function": {...}}]`.
+* The schema compiler (`src/canvas.py`) automatically maps candidate tool names to slot-constrained candidate tokens on the micro-control canvas.
 
 
-* Parameter-Efficient Fine-Tuning (PEFT/LoRA) recipes for diffusion models.
 
+#### 4. OpenAI-Compatible API Server (`src/server.py`)
 
-* Find existing, working implementations for diffusion decoders, adapter fine-tuning, and metric calculation; adapt and integrate them directly into `/reflex`.
+Implement a FastAPI application exposing:
 
-#### 4. Senior ML Engineering Authority
-
-* You have full discretion over architecture, scripts, hyperparameters, and directory organization.
-* You are empowered to make pragmatic tradeoffs. If a proposal detail proves computationally suboptimal or incompatible with available CUDA kernels, adjust it, document your rationale in `NOTES.md`, and implement the better solution.
-* Be patient: if training a LoRA adapter or running a multi-sample benchmark takes 30 to 90 minutes, initiate the run, verify GPU utilization via `nvidia-smi`, log progress intervals, and allow it to complete properly.
-
----
-
-### TECHNICAL EXECUTION ROADMAP
+* `GET /health` (System status, active GPU memory, loaded mode).
+* `GET /v1/models` (Returns model ID and active mode metadata).
+* `POST /v1/chat/completions`:
+* Full support for OpenAI request and response specifications.
+* When `reflex` mode executes an atomic tool reflex on Step 1, format the output as:
+```json
+{
+  "id": "chatcmpl-reflex-xyz",
+  "object": "chat.completion",
+  "created": 1789999999,
+  "model": "reflex-diffusiongemma",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [{
+        "id": "call_123",
+        "type": "function",
+        "function": {"name": "target_tool_name", "arguments": "{}"}
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }],
+  "usage": {"prompt_tokens": 128, "completion_tokens": 0, "total_tokens": 128},
+  "reflex_metadata": {
+    "execution_path": "FAST_PATH_STEP_1",
+    "latency_ms": 112.4,
+    "confidence": 0.982
+  }
+}
 
 ```
-[Phase A] Environment Verification & Checkpoint Audit
-    │
-[Phase B] Real Dataset Ingestion (Banking77, BoolQ, BFCL Routing)
-    │
-[Phase C] Real Split-Conformal Calibration & Risk Gate Validation
-    │
-[Phase D] In-Memory KV-Cache Retention & Seamless Expansion
-    │
-[Phase E] Multi-Task Calibration SFT / LoRA Adapter Training
-    │
-[Phase F] End-to-End Pareto Benchmarking & Open-Source Artifact Packaging
 
-```
 
-#### Phase A: Environment Audit & Checkpoint Baseline
-
-* [ ] Inspect GPU hardware, compute capability, available VRAM, CUDA versions, and current dependencies. Log the baseline in `NOTES.md`.
-* [ ] Verify the loaded `DiffusionGemma` checkpoint (or local weight directory). Validate that inference runs cleanly on the DGX GPU without memory leaks.
-* [ ] Audit the existing code in `/reflex/src/` (`canvas.py`, `risk_gate.py`, `expansion.py`, `runtime.py`) and existing tests in `/reflex/tests/`. Run `pytest` to establish an unbroken baseline.
+* When generating open text, return standard `message: {"role": "assistant", "content": "..."}`.
 
 
 
-#### Phase B: Real Dataset Ingestion & Preprocessing
+#### 5. Verification & Test Suite (`tests/`)
 
-* [ ] Download and prepare real benchmark datasets:
-* **Intent / Routing:** `Banking77` (77 fine-grained categories) and a subset of `Berkeley Function Calling Benchmark (BFCL)` or `ToolBench`.
-* **Boolean / Safety Verification:** `BoolQ` (factual boolean QA) and synthetic risk-gating pairs.
+Write standalone validation scripts that execute against the live server:
 
+* `tests/test_fast_path_reflex.py`: Sends single-turn discrete routing queries and asserts response time is $<150\text{ ms}$ with valid `tool_calls`.
+* `tests/test_generative_expansion.py`: Sends open-ended text and coding prompts, verifying valid multi-step text generation.
+* `tests/test_multimodal.py`: Sends an image + question payload, verifying the vision encoder functions without runtime crashes.
+* `tests/test_openai_client.py`: Verifies direct compatibility using the official `from openai import OpenAI` Python SDK.
 
-* [ ] Write a dedicated ingestion and formatting script in `scripts/prepare_datasets.py` that formats each dataset into:
-* Input state context (user prompt / function definitions).
-* Typed control schema (`Choice` options, `Noul` / boolean options).
-* Ground-truth targets.
+#### 6. Public Documentation & Presentation (`README.md`)
 
+Write an executive, publication-grade `README.md` containing:
 
-* [ ] Split each dataset strictly into **Train / Calibration / Test** splits (e.g., 60% Train, 20% Calibration, 20% Test) to ensure mathematical validity for conformal prediction.
-
-#### Phase C: Split-Conformal Risk Gate Calibration
-
-* [ ] In `src/risk_gate.py`, calibrate the empirical threshold $\lambda^*$ on the held-out **Calibration split**:
-
-$$\lambda^* = \sup \left\{ \lambda \in [0, 1] : \widehat{R}_{\text{UCB}}(\lambda) \le \epsilon \right\}$$
-
-
-
-for target error tolerances $\epsilon \in \{0.001, 0.005, 0.01, 0.05\}$.
+1. **Hero Overview:** Crisp explanation of Reflex—unifying sub-150ms discrete decision reflexes (System 1) with generative diffusion synthesis (System 2) in a single model.
+2. **Architectural Comparison Table:** Reflex vs. Monolithic AR LLMs vs. TypeSafe Jev vs. Two-Model Cascades.
+3. **Hardware Requirements & Prerequisites:** GPU memory guidelines (80GB+ VRAM recommendations for 26B/A4B checkpoint), CUDA drivers, Python version.
+4. **Quickstart Guide (5 Minutes to Run):**
+* Environment setup & dependency installation (`requirements.txt`).
+* `.env` file configuration.
+* One-line server launch command: `python -m src.server`.
 
 
-* [ ] Evaluate the calibrated policy on the **Test split**:
-* Measure empirical fast-path error rate: $P(\text{error} \mid \text{EXIT})$.
-* Measure fast-path coverage: proportion of queries exiting at Step 1.
-* Verify that empirical error strictly satisfies the conformal guarantee ($\le \epsilon$).
+5. **Client Usage Examples:**
+* Python snippet using standard `openai` library for fast tool dispatch.
+* Python snippet using standard `openai` library for conversational generation.
 
 
-* [ ] Document all metrics tables, distributions, and risk curves in `NOTES.md`.
-
-#### Phase D: True KV-Cache Retention & In-Flight Expansion
-
-* [ ] Analyze the current Phase 1 $\rightarrow$ Phase 2 boundary in `src/runtime.py` and `src/expansion.py`.
-
-
-* [ ] **Crucial Architectural Requirement:** Ensure that when a query escalates from Phase 1 (Micro-Control Canvas) to Phase 2 (Generative Canvas), the prompt KV-cache is **retained in GPU memory and reused directly**, without re-tokenizing or re-encoding the causal context.
-
-
-* [ ] Instrument exact microsecond timing to prove zero re-encoding penalty:
-* Measure `Latency(Prompt Encoding)`.
-* Measure `Latency(Phase 1 Micro-Canvas Pass)`.
-* Measure `Latency(Phase 2 Generative Expansion)`.
-
-
-* [ ] Confirm that total latency of an expanded request equals:
-
-$$\text{Latency}_{\text{total}} = \text{Latency}_{\text{prefill}} + \text{Latency}_{\text{step1}} + \text{Latency}_{\text{denoise\_gen}}$$
-
-
-
-with zero redundant prompt computation.
-
-
-
-#### Phase E: Calibrated Multi-Task Fine-Tuning (SFT / LoRA)
-
-* [ ] If stock zero-shot Step-1 logit separation on the control slots is noisy or under-calibrated (high Expected Calibration Error / high Brier score), implement parameter-efficient fine-tuning (LoRA):
-
-
-* Apply LoRA adapters to the attention projections of the diffusion decoder.
-* Train using the composite objective:
-
-$$\mathcal{L} = \mathcal{L}_{\text{diffusion}} + \lambda_1 \mathcal{L}_{\text{control}} + \lambda_2 \mathcal{L}_{\text{Brier}}$$
-
-
-
-where $\mathcal{L}_{\text{control}}$ optimizes cross-entropy over allowed candidate token sets, and $\mathcal{L}_{\text{Brier}}$ penalizes probabilistic overconfidence quadratically.
-
-
-
-
-* [ ] Set up the training script in `experiments/train_reflex_lora.py`:
-* Use PyTorch AMP (`bfloat16`), gradient accumulation, and standard cosine warmup.
-* Track and log training loss curves, Step-1 accuracy, and Brier score progression directly in `NOTES.md`.
-
-
-* [ ] Save the trained adapter checkpoint in `models/reflex_lora_v1/`.
-
-#### Phase F: Full Pareto Benchmarking & Final Release Artifacts
-
-* [ ] Run a complete, auditable benchmark comparing four real configurations on the exact same hardware:
-1. **Autoregressive LLM Baseline:** Real token-by-token generation for structured tool/classification calls (measure latency, GPU-ms, token count, JSON parse failures).
-
-
-2. **Standard Diffusion Baseline:** Full fixed-step denoising (e.g., 20 steps) over a standard 256-token canvas.
-
-
-3. **Two-Model Cascade Baseline:** Small classifier router + AR LLM for escalated queries.
-
-
-4. **Reflex (Proposed):** Micro-control canvas + conformal risk gate + conditional generative expansion.
-
-
-
-
-* [ ] Compute and plot the **Accuracy vs. Latency / Compute Pareto Frontier** (saving raw JSON data and publication-quality plots to `experiments/` and `results/`).
-
-
-* [ ] Update `RESULTS.md` with final, auditable tables, hardware specifications, reproduction commands, and mathematical proofs of the conformal bounds.
-* [ ] Clean up code, ensure 100% passing tests via `pytest`, and format code for public open-source release.
+6. **Benchmark & Research Artifacts:** References to paper findings, latency scaling benchmarks, and Pareto plots.
 
 ---
 
-### ESCALATION & AUTONOMOUS ACTION RULES
+### EXECUTION STAGES
 
-* **Self-Correction & Autonomous Problem Solving:** If you encounter missing packages, CUDA/compiler errors, dimension mismatches, or Hugging Face authentication warnings, resolve them autonomously using web search, shell diagnostics, and library documentation.
-* **When to Pause and Escalate:**
-* You encounter a missing hardware entitlement or permission wall that requires host sudo intervention.
-* You require private credentials/tokens not present in the environment.
-* You uncover a mathematical or hardware contradiction that fundamentally invalidates the core thesis.
-
-
-* **Escalation Format:** When escalating, summarize the exact failure, past attempts, root cause analysis, and the single concrete action required from the user in `NOTES.md`, and output a concise alert.
-
----
-
-### INITIATION
-
-Begin execution immediately.
-
-1. Open and review existing files in `/reflex`(your current workspace).
-2. Append a new session initialization header to `NOTES.md` with current system diagnostics.
-3. Proceed with implementation. 
+1. **Audit & Scaffolding:** Inspect existing files, create clean directory structure (`src/`, `tests/`, `configs/`).
+2. **Engine & Configuration:** Build `src/config.py`, `src/canvas.py`, and `src/engine.py` connecting the verified model pipeline to the dual-mode switch.
+3. **API Implementation:** Build `src/server.py` with FastAPI, handling JSON tool extraction, micro-canvas seeding, and OpenAI response formatting.
+4. **Testing & Validation:** Spin up the server locally on the GPU, execute the test suite, and record real stdout traces in `NOTES.md`.
+5. **Documentation & Polish:** Finalize `README.md`, `.env.example`, and `requirements.txt`.

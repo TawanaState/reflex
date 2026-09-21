@@ -357,3 +357,21 @@ Run end-to-end comparative benchmark across four real paradigms on physical NVID
   - results/pareto_frontier.png
   - experiments/real_pareto_frontier_v2.png
 
+---
+
+## [2026-09-21 17:00] - Task: Phase G Open-Source Serving & Public Release Packaging
+
+### Objective & Deliverables
+Transform Project Reflex research into a production-grade, reproducible open-source release with an OpenAI-compatible FastAPI inference server:
+1. Environment & Config: `.env`, `.env.example`, `requirements.txt`, and `src/config.py` with `Settings` (pydantic-settings), binding to port 8090 by default and reading `DIFFUSION_GEMMA_PATH`.
+2. Schema & Canvas Tool Compiler: `src/canvas.py` updated with `compile_tools_to_schema`, mapping OpenAI tool definitions to micro-control canvas decision slots using indexed routing tokens (`<unused0>`, `<unused1>`, ...).
+3. Dual-Mode Inference Engine: `src/engine.py` supporting `reflex` (sub-150ms Step-1 fast-path + conformal risk gate + conditional generative expansion with KV-cache retention) and `vanilla` (fixed multi-step diffusion baseline), plus multimodal vision payloads (`image_url` base64/URL).
+4. OpenAI-Compatible FastAPI Server: `src/server.py` exposing `/health`, `/v1/models`, and `/v1/chat/completions` with streaming support and `reflex_metadata`.
+5. Standalone Integration Test Suite:
+   - `tests/test_fast_path_reflex.py`
+   - `tests/test_generative_expansion.py`
+   - `tests/test_multimodal.py`
+   - `tests/test_openai_client.py`
+6. Publication-Grade Documentation: Executive `README.md` with architectural comparison table, quickstart, client snippets, and benchmark citations.
+
+

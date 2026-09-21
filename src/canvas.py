@@ -226,3 +226,82 @@ class CanvasCompiler:
             has_synthesis=has_synthesis,
         )
 
+
+@dataclass
+class ToolDefinition:
+    """Represents a parsed OpenAI tool function."""
+    name: str
+    description: str = ""
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    is_atomic: bool = True
+
+
+def parse_openai_tools(tools: Optional[List[Dict[str, Any]]]) -> List[ToolDefinition]:
+    """Parses OpenAI tool specification dictionaries into structured ToolDefinitions."""
+    if not tools:
+        return []
+    parsed = []
+    for t in tools:
+        fn = t.get("function", t)
+        name = fn.get("name", "")
+        desc = fn.get("description", "")
+        params = fn.get("parameters", {})
+        # A function is atomic if it requires no parameters or has empty properties
+        required = params.get("required", []) if isinstance(params, dict) else []
+        props = params.get("properties", {}) if isinstance(params, dict) else {}
+        is_atomic = (len(required) == 0 and len(props) == 0)
+        parsed.append(ToolDefinition(name=name, description=desc, parameters=params, is_atomic=is_atomic))
+    return parsed
+
+
+def compile_tools_to_schema(
+    tools: List[Dict[str, Any]],
+    tokenizer: Any,
+    mask_token_id: int = 4,
+    allow_direct_response: bool = False,
+) -> Tuple[CompiledCanvas, Dict[str, ToolDefinition]]:
+    """
+    Compiles OpenAI tool definitions into a micro-control canvas with decision slots:
+      - 'action': tool names mapped to candidate tokens [6, 7, ...]
+    """
+    parsed_tools = parse_openai_tools(tools)
+    tool_dict = {t.name: t for t in parsed_tools}
+
+    tool_options = [t.name for t in parsed_tools]
+    if (allow_direct_response and len(tool_options) > 0) or not tool_options:
+        tool_options.append("direct_response")
+
+    # Tokens 6, 7, ... (<unused0>, <unused1>, ...) correspond to BFCL indexed routing classes
+    cand_ids = [6 + i for i in range(len(tool_options))]
+
+    action_slot = ControlSlot(
+        name="action",
+        slot_type=SlotType.CHOICE,
+        candidate_labels=tool_options,
+        candidate_token_ids=cand_ids,
+        is_generative=False,
+        description="Selected tool action or direct_response",
+    )
+
+    open_bracket = tokenizer.encode("[", add_special_tokens=False)
+    open_b = open_bracket[0] if open_bracket else 101
+    close_bracket = tokenizer.encode("]", add_special_tokens=False)
+    close_b = close_bracket[0] if close_bracket else 102
+    pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
+
+    # 4-token micro-canvas: [ [ , <mask , ] , <pad ] matching Phase 0 / LoRA training
+    canvas_tokens = torch.tensor([[open_b, mask_token_id, close_b, pad_id]], dtype=torch.long)
+    action_slot.canvas_position = 1
+
+    return CompiledCanvas(
+        canvas_tokens=canvas_tokens,
+        slots={"action": action_slot},
+        slot_positions=[1],
+        allowed_token_ids={1: cand_ids},
+        canvas_length=4,
+        mask_token_id=mask_token_id,
+        has_synthesis=False,
+    ), tool_dict
+
+
+
