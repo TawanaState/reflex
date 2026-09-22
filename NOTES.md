@@ -436,3 +436,105 @@ Updated `README.md` and repository citation:
 
 
 
+
+---
+
+## [2026-09-22] Active repair session: baseline and priorities
+
+The previous audit found a real GB10 inference server and real model timing, but the saved held-out Step-1 artifact records 43/100 correct (43/75 BoolQ, 0/25 Banking77), the published conformal sweep has zero exits, and live multi-tool requests selected `mute_audio` for unrelated volume and email requests. The saved tiered artifact reports 20% exact Tier-2 argument accuracy. The old Pareto plot mixes measurements with inserted estimates. The 13 fast unit tests pass; they do not establish model quality.
+
+This session will prioritize (1) train/serve prompt and label alignment, (2) schema and argument correctness, (3) fail-closed risk gating, (4) benchmark integrity, and (5) documentation. Existing raw artifacts and adapter weights will be preserved. The running server may still execute old imported code until a controlled restart; code edits alone do not change its active process. Credential rotation is deferred by the owner. Record new evidence below as work proceeds.
+
+### Tokenizer and supervision check
+
+Using the installed local DiffusionGemma tokenizer, token IDs 6 and 7 decode to `<unused0>` and `<unused1>` as expected. However, the BoolQ preparation script hard-codes yes=9484 and no=2374; these decode to unrelated text (`aken` and `mathcal`). The installed tokenizer encodes `yes` as [4443] and `no` as [1904]. These IDs must be derived from the pinned tokenizer during dataset preparation, validated as one-token verbalizers, and stored with a tokenizer revision/hash. The current v1 adapter was trained on incorrect BoolQ targets. The old saved results are historical artifacts and should not be relabeled as corrected measurements. In addition, training uses raw task prompts while serving wraps them in the chat template, a distribution shift; BFCL training labels every sample as option zero. A v2 adapter requires corrected data and a clearly matched training/serving prompt format.
+
+### Supervision repair completed
+
+Pinned the official BFCL multiple-call source and answer files to Gorilla commit `6ea57973c7a6097fd7c5915698c54c17c5b1b6c8`. The official answer file contains one uniquely named call for each of the 200 locally committed BFCL examples. Correct targets occur at candidate indices 0:73, 1:71, 2:42, and 3:14; the former all-zero labeling was wrong for 127/200 rows. Added a repair command to scripts/prepare_datasets.py and ran it without changing example IDs or split membership. Corrected all 9,270 BoolQ records to candidate IDs [1904, 4443] for [no, yes] and corrected 127 BFCL rows to official answer positions. Wrote data/supervision_provenance.json with the answer URL, SHA256, tokenizer path, and changed-row counts. Split overlap verification passed for all datasets. This repair does **not** fix the already trained v1 adapter or historical evaluation artifacts; those must remain marked as results from flawed supervision.
+
+### Schema and primitive validation repair
+
+Updated src/schema/inspector.py so optional properties no longer disappear into the atomic tier and numeric minimum/maximum constraints reach validation. Updated src/engine/canvas.py to require all declared required primitive fields, reject unnamed numeric fallbacks, reject invalid enums instead of silently selecting the first enum value, reject unrecognized booleans, reject malformed numeric text, and enforce numeric bounds. Added tests/test_schema_validation.py with three focused tests; all pass. This is a **fail-closed parsing improvement**, not evidence that the model now generates correct argument values. The GPU server has not yet reloaded these modules.
+
+### v2 training preparation
+
+Updated experiments/train_reflex_lora.py to load its base checkpoint from project settings, write to models/reflex_lora_v2 by default, apply the same chat wrapper used by serving to every training and validation prompt, include 30 BFCL calibration examples in validation, and keep training-window and validation metrics separate in its saved history. The visible bracket/pad syntax loss has been disabled for v2 because it was not a true diffusion denoising target. No v2 GPU training has run yet. The current server is process 1049754 on port 8090; it holds approximately 48 GB of model allocation, leaving only ~45 GiB system memory available, so a second BF16 model load is unsafe. If training proceeds, stop only this Reflex server, run training, then restart it and verify health. Existing v1 weights and historical results remain untouched.
+
+### GPU run started
+
+Temporarily terminated only the Reflex server process on port 8090 to free its model allocation. Launched `.venv/bin/python -u experiments/train_reflex_lora.py` in a tracked terminal session (session ID 75685). Expected output is models/reflex_lora_v2; v1 remains intact. The server is intentionally unavailable during this run. Training results, any failure, and restart verification will be recorded below.
+
+The first v2 training command exited before loading the model: running the script directly set Python's import path to experiments/, so `from src.config import get_settings` failed. Added the repository root to sys.path and restarted training in session 66523. No checkpoint was written by the failed attempt.
+
+### Tiered benchmark replaced with correctness-aware traces
+
+Rewrote experiments/benchmark_tiered_latency.py to retain the historical JSON and write a new timestamped per-request JSONL trace plus summary. Each request now records HTTP status, wall and engine latency, execution path, actual tier, forward-count metadata, actual tool, raw arguments, JSON parse status, expected tool/tier/arguments, and a call-correct flag. The three cases share a distracting tool menu, so a wrong atomic route cannot masquerade as Tier-2 or Tier-3 speed. Summary latencies are shown for all requests and separately for correct calls; no quality-blind speedup is computed. Syntax compilation passed. This benchmark has not run yet because v2 training is loading/running on the GPU and the server is paused.
+
+### Serving and risk-gate changes made while v2 loads
+
+In src/engine/runner.py, removed the fixed `is_calibrated=True` assertion and the separate `overall_conf >= 0.50` fast-path bypass. The default uncalibrated threshold is now explicitly a 0.90 heuristic; no mathematical bound is claimed for it. A low-confidence selected tool falls back to text generation instead of emitting a tool call. Explicit tool_choice=none now omits tools; a named tool_choice is validated against offered tools. Tier-2 iteration now pins seeded syntax positions and only updates value slots; missing required arguments return a non-tool failure response instead of a tool call. These changes need GPU integration after the server restarts.
+
+In src/risk_gate.py, calibration searches a fixed confidence grid from low threshold toward high coverage and adjusts delta for the grid search. Added an exact binomial Clopper-Pearson option. Zero test exits now produce undefined selective error and bound status. Corrected the old unit tests that treated zero exits as a successful bound; the focused risk tests pass. The old historical artifacts were produced by the earlier implementation and are unchanged. A versioned deployed calibration artifact is still missing; the current default should be described only as a heuristic.
+
+### Held-out routing probe prepared
+
+Added experiments/benchmark_routing_v2.py. It reconstructs the BFCL tool menu from the 40 held-out test rows, sends real API calls, records per-item tool selection and latency, and repeats with a deterministic candidate-order permutation to test positional bias. It writes timestamped JSONL traces and a summary. It has passed syntax compilation but has not run; execution must wait for v2 training and server restart. It evaluates **single-tool routing only**, not the official full BFCL function-call score or argument correctness.
+
+### Training progress checkpoint
+
+The v2 run completed the slow base-model load (~5 minutes) and reached at least optimizer step 30 with ~48.3 GB allocated. No final adapter or validation metrics yet. Continue monitoring session 66523 and restart the server after the run finishes or fails.
+
+### Public documentation correction
+
+Replaced RESULTS.md with an evidence-status report that distinguishes real component timings, historical v1 task outcomes, zero-exit calibration, inserted Pareto values, and pending v2 evaluation. Replaced README.md with a shorter experimental-project guide that states the current heuristic gate, known v1 failures, reproducible commands, and prior structured-read work. The first long README write was delayed by an automatic approval-review timeout and did not execute; a shorter retry succeeded. These documentation changes remove unsupported paper-level claims while preserving links to underlying historical artifacts in the repository.
+
+### v2 training completed; server restart in progress
+
+Session 66523 completed successfully. The base-model load took about five minutes; 200 optimizer steps took 435.0 seconds (7.25 minutes) with approximately 48.35 GB allocated. The new checkpoint is models/reflex_lora_v2; v1 was not overwritten. The final **training-window** accuracy was 77.5% and Brier score 0.2347. The 90-example validation sample was 52.22% at step 50, 63.33% at step 100, 61.11% at step 150, and 61.11% at step 200, with final validation Brier score 0.4298. These are small mixed-task validation figures, not held-out test results or evidence of calibrated tool-calling. Started the server with `REFLEX_LORA_PATH=models/reflex_lora_v2` in session 85754; health and quality checks are pending while weights load.
+
+### v2 provenance and Tier-3 validity
+
+Wrote models/reflex_lora_v2/provenance.json with the base checkpoint path, current Git HEAD, package versions, SHA256 values for all nine split files, the supervision provenance file, and the v2 adapter. The manifest notes the working tree is modified, so a future clean reproduction should commit/pin the final code state. Tightened the Tier-3 tool path in src/engine/runner.py: it now requires a parseable JSON object with validated required fields before returning an executable tool call. Otherwise it returns a non-tool validation failure. This change was made after the server process began importing modules; reload the engine after startup before GPU integration checks.
+
+### Live v2 integration and held-out routing (2026-09-22)
+
+The server finished loading the v2 adapter at `models/reflex_lora_v2` and `/health` reported `adapter_loaded=true` on the NVIDIA GB10 with about 48.14 GiB allocated. Called `/admin/reload` to bind the latest schema and runner code without reloading weights. The focused `unittest` run for schema validation and risk calibration passed 7/7. A `pytest` invocation failed only because pytest is not installed in the project environment; tests use `unittest`.
+
+`experiments/benchmark_routing_v2.py --max-items 40` sent 80 real HTTP requests: 40 original local BFCL test menus and 40 deterministically permuted menus. The response trace `experiments/bfcl_routing_v2_20260922T082353Z.jsonl` and summary record **40/40 correct tool names in each condition**, all through `FAST_PATH_STEP_1`, with confidence 0.9334–1.0. This is a promising local single-tool routing result, not the official BFCL score or evidence of argument accuracy. Original gold indices were 18 at 0, 12 at 1, 9 at 2, and 1 at 3; the permutation shifts that distribution. Exact ID overlap across train/cal/test is zero, but two exact `user_query` strings overlap train and test (menus may differ). Future reporting should flag or remove those two examples and test a larger external held-out set. The running process imported `src.server` before its new `candidate_action` response field was added, so this trace does not include that field despite the engine reload.
+
+### Live tiered correctness result (2026-09-22)
+
+`REFLEX_BENCH_TRIALS=5 .venv/bin/python experiments/benchmark_tiered_latency.py` completed 15 API requests. Trace: `experiments/tiered_latency_traces_20260922T082436Z.jsonl`; summary: `experiments/tiered_latency_summary_20260922T082436Z.json`. With the same three-tool menu, Tier 1 atomic mute call was correct 5/5 at mean wall latency 277.6 ms. Tier 2 routed to `set_volume` 5/5 but returned `{"level": 1}` for a request asking for 57, so exact call correctness was 0/5 at mean 520.1 ms. Tier 3 returned no executable email call in 5/5 because the generated payload failed required-field validation; exact call correctness was 0/5 at mean 2638.6 ms. The fail-closed Tier 3 behavior prevents malformed tool calls but does not make the feature functional. This sharply limits any claim that tiered *function calling* works today. The latency numbers are real measurements of these paths; speed comparisons must be conditioned on correctness.
+
+An additional narrow code check found an undefined `candidate_action` reference accidentally added to the vanilla response while exposing routing diagnostics. Removed it before integration; the focused tests pass. The v2 server remains running.
+
+### Primitive argument repair and remeasurement (2026-09-22)
+
+The first v2 tier probe showed that the action-routing adapter does not learn numeric values: it emitted `level=1` for a request for 57. To prevent valid-looking but incorrect executable calls, replaced the Tier-2 model value path with a deliberately narrow deterministic extractor. It accepts only a schema with exactly one required numeric property and exactly one explicit numeric literal in the latest user message; it applies the schema's type and numeric bounds. It abstains on multiple literals, absent literals, out-of-range values, and other primitive schemas. This is **not neural argument generation**, should not be called a denoising result, and the old low-step Tier-2 inference claim is not supported by the new deployed path. `src/engine/canvas.py` holds the extractor; `src/engine/runner.py` calls it after learned action selection. A focused unit test covers 57, ambiguity, bounds, and an absent numeral. Eight focused tests and syntax compilation pass.
+
+After `/admin/reload`, the second real tiered probe (`experiments/tiered_latency_traces_20260922T082929Z.jsonl`, matching summary JSON) measured atomic mute 5/5, explicit numeric `set_volume(level=57)` 5/5, and email 0/5. The numeric path now uses one model forward pass plus deterministic extraction, with five wall times from 275.4 to 298.9 ms; it is no longer the former 2–4 step value canvas. A separate live three-request check confirmed that `10 and 20` and out-of-range `101` return no tool call with `ARGUMENT_VALIDATION_FAILED`, while `57` returns the expected call. Tier 3 still does not produce a usable email payload, and correctness-aware latency reporting remains necessary.
+
+Two exact test query strings overlap BFCL train despite disjoint IDs: `multiple_111` with train `multiple_198`, and `multiple_109` with train `multiple_196`. Candidate menus differ. Excluding them leaves 38/38 correct original-menu calls, but a future paper dataset should eliminate these overlaps before it is frozen and report a new untouched test result. The current 40/40 result remains a local exploratory probe.
+
+### Documentation, legacy benchmarks, and final code checks (2026-09-22)
+
+Updated README.md, RESULTS.md, and the top of PROMPT.md with the measured v2 status and limits. RESULTS.md now distinguishes the 40/40 local routing probe from official BFCL, states the two query overlaps, and separates learned routing from deterministic numeric extraction and unsuccessful free-text calls. PROMPT.md remains a historical audit/repair brief but now starts with a current checkpoint and next priorities. The owner deferred credential work; the prompt reflects that instruction.
+
+`experiments/benchmark_pareto_suite.py` and `experiments/generate_real_pareto_analysis.py` are retained as inspectable historical source, but `main()` now stops immediately with an explicit error. They formerly inserted fixed accuracies, cascade points, random latencies, and assumed risk into figures labeled empirical; they must not be rerun to create paper charts. Removed the legacy suite's automatic `sudo systemctl` service manipulation. New figures should use only per-request traces.
+
+After the primitive change, `.venv/bin/python -m unittest discover tests -v` passed all 17 discoverable unit tests at that checkpoint. `.venv/bin/python -m compileall -q src experiments scripts` and `git diff --check` passed. These checks do not establish model generalization. The server is still running v2 on port 8090 after a successful `/admin/reload`.
+
+### Final verification and remaining limitations (2026-09-22)
+
+Added a non-finite numeric guard in `cast_primitive_value`: Python's JSON parser accepts `NaN` and `Infinity`, which otherwise could escape range comparisons and become malformed executable tool arguments. A regression test covers both. Reloaded the live engine, and `/health` still reports a healthy v2 adapter on the GB10 at roughly 48.17 GiB allocated. Final discoverable unit suite: **18 tests passed**; syntax compilation for src/experiments/scripts passed; `git diff --check` passed. The v2 adapter directory is about 75 MB and remains uncommitted, along with new traces and code/data/doc edits. No commit or publication action was taken.
+
+Remaining material gaps for a paper or general tool-calling claim: the local BFCL routing set is small and has two repeated queries across train/test; no base-model or quality-matched AR baseline was run in this repair session; the gate has no deployed task-bound calibration artifact, and a one-option tool menu gives a trivial softmax confidence of 1; the numeric path supports only one explicit literal and is deterministic; the free-text argument path failed all five live calls; the larger canvas uses repeated full-canvas argmax rather than the official DiffusionGemma generation algorithm. The current server can be shared as an experimental prototype with these limits, but do not claim a paper-ready accuracy/latency frontier or working general function calling. `PROMPT.md` starts with a current checkpoint for the next developer/agent.
+
+### Generation path handoff
+
+Inspected the installed Transformers `DiffusionGemmaGenerationMixin.generate` implementation in `.venv/lib/python3.12/site-packages/transformers/models/diffusion_gemma/generation_diffusion_gemma.py`. The official method has an outer block-generation loop and an inner sampler with token acceptance/renoising and self-conditioning; it can receive `past_key_values`, but then `input_ids` must contain only uncached data. The current Reflex Tier-3 loop instead replaces the entire canvas with argmax tokens on each pass and uses the original tool-selection prompt, which asks for an index rather than a JSON payload for the selected tool. A credible Tier-3 repair therefore needs an explicit selected-tool argument prompt or trained conditional target, official sampler integration, and tests that compare exact required arguments and latency. This is not safely solved by merely increasing the current step count.
+
+### BFCL overlap-aware rerun
+
+Updated `experiments/benchmark_routing_v2.py` to flag exact normalized user-query overlap with its training split in every per-item row and report both overall and non-overlap counts. Reran the full 80-request original/permuted local probe on the still-running v2 server. `experiments/bfcl_routing_v2_20260922T084010Z.summary.json` reports 40/40 original and 40/40 permuted, with overlap IDs `multiple_111` and `multiple_109` in each condition; excluding these gives **38/38** for each condition. The corresponding JSONL is the preferred trace for new analyses. This is an exact-string contamination check; it does not rule out paraphrase or template similarity, and 38 examples remain too few for a strong paper claim.

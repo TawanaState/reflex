@@ -1,7 +1,7 @@
 """
 Reflex Conformal Risk Gate: Calibrated stopping and early-exit policy for single-step reflex decisions.
-Implements Conformal Risk Control (Angelopoulos et al.) with Upper Confidence Bounds (UCB)
-to guarantee P(error | exit) <= eps.
+Provides a fixed-grid selective-risk threshold helper using binomial upper bounds.
+A bound applies only after valid task-matched calibration under its sampling assumptions.
 """
 
 from dataclasses import dataclass
@@ -10,6 +10,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
+from scipy.stats import beta
 
 
 class ExitAction(str, Enum):
@@ -45,9 +46,8 @@ class RiskGateResult:
 
 class ConformalRiskGate:
     """
-    Conformal Risk Gate for Project Reflex.
-    Calibrates early-exit thresholds on a validation split to provide statistical guarantees
-    on fast-path error rate: P(error | exit) <= epsilon.
+    Selective-risk threshold helper for Project Reflex.
+    Calibration is meaningful only for matching model, prompt, menu and task distributions.
     """
 
     def __init__(
@@ -55,7 +55,7 @@ class ConformalRiskGate:
         epsilon: float = 0.05,
         delta: float = 0.05,
         default_threshold: float = 0.85,
-        bound_type: str = "empirical_bernstein",
+        bound_type: str = "clopper_pearson",
     ):
         """
         Args:
@@ -72,21 +72,25 @@ class ConformalRiskGate:
         self.calibrated_lambda = 1.0 - default_threshold
         self.calibration_stats: Dict[str, Any] = {}
 
-    def _compute_ucb(self, errors_exited: np.ndarray, n_exit: int) -> float:
+    def _compute_ucb(self, errors_exited: np.ndarray, n_exit: int, delta_override: Optional[float] = None) -> float:
         """Computes Upper Confidence Bound on empirical risk using selected bound."""
         if n_exit == 0:
             return 1.0
         emp_risk = float(np.mean(errors_exited))
+        delta = delta_override if delta_override is not None else self.delta
+        if self.bound_type == "clopper_pearson":
+            n_errors = int(np.sum(errors_exited))
+            return 1.0 if n_errors == n_exit else float(beta.ppf(1.0 - delta, n_errors + 1, n_exit - n_errors))
 
         if self.bound_type == "empirical_bernstein" and n_exit > 2:
             var_emp = float(np.var(errors_exited, ddof=1))
-            log_term = math.log(2.0 / self.delta)
+            log_term = math.log(2.0 / delta)
             term1 = math.sqrt(2.0 * var_emp * log_term / n_exit)
             term2 = 7.0 * log_term / (3.0 * (n_exit - 1))
             return min(1.0, emp_risk + term1 + term2)
         else:
             # Hoeffding inequality: emp_risk + sqrt(ln(1/delta) / (2 * n_exit))
-            log_term = math.log(1.0 / self.delta)
+            log_term = math.log(1.0 / delta)
             return min(1.0, emp_risk + math.sqrt(log_term / (2.0 * n_exit)))
 
     def calibrate(
@@ -115,18 +119,19 @@ class ConformalRiskGate:
             return self.confidence_threshold
 
         errors = (predictions != ground_truth).astype(float)
-        # Search candidate thresholds from fine resolution in [0.50, 0.999]
-        threshold_candidates = np.linspace(0.50, 0.999, 500)
-        best_thresh = 0.999  # Conservative default
+        # Fixed threshold grid; Bonferroni correction makes selection over it simultaneous.
+        threshold_candidates = np.linspace(0.50, 1.0, 501)
+        adjusted_delta = self.delta / len(threshold_candidates)
+        best_thresh = 1.1  # No exit if no threshold passes.
 
-        for thresh in reversed(threshold_candidates):
+        for thresh in threshold_candidates:
             exit_mask = confidences >= thresh
             n_exit = int(np.sum(exit_mask))
             if n_exit == 0:
                 continue
 
             errors_exited = errors[exit_mask]
-            ucb = self._compute_ucb(errors_exited, n_exit)
+            ucb = self._compute_ucb(errors_exited, n_exit, adjusted_delta)
 
             if ucb <= eps:
                 best_thresh = thresh
@@ -140,7 +145,7 @@ class ConformalRiskGate:
         n_exit = int(np.sum(exit_mask))
         errors_exited = errors[exit_mask] if n_exit > 0 else np.array([])
         emp_risk = float(np.mean(errors_exited)) if n_exit > 0 else 0.0
-        ucb = self._compute_ucb(errors_exited, n_exit) if n_exit > 0 else 1.0
+        ucb = self._compute_ucb(errors_exited, n_exit, adjusted_delta) if n_exit > 0 else 1.0
 
         self.calibration_stats = {
             "cal_samples": n_samples,
@@ -152,6 +157,8 @@ class ConformalRiskGate:
             "epsilon": eps,
             "delta": self.delta,
             "bound_type": self.bound_type,
+            "threshold_grid_size": len(threshold_candidates),
+            "adjusted_delta": adjusted_delta,
         }
         return self.confidence_threshold
 
@@ -180,6 +187,7 @@ class ConformalRiskGate:
         predictions: np.ndarray,
         ground_truth: np.ndarray,
         threshold: Optional[float] = None,
+        target_epsilon: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Evaluates calibrated policy on held-out test split:
@@ -190,7 +198,7 @@ class ConformalRiskGate:
         thresh = threshold if threshold is not None else self.confidence_threshold
         n_samples = len(confidences)
         if n_samples == 0:
-            return {"test_coverage": 0.0, "test_selective_error": 0.0, "bound_satisfied": True}
+            return {"test_coverage": 0.0, "test_selective_error": None, "bound_satisfied": None}
 
         errors = (predictions != ground_truth).astype(float)
         exit_mask = confidences >= thresh
@@ -200,16 +208,17 @@ class ConformalRiskGate:
         if n_exit > 0:
             sel_error = float(np.sum(errors[exit_mask]) / n_exit)
         else:
-            sel_error = 0.0
+            sel_error = None
 
-        satisfied = bool(sel_error <= self.epsilon)
+        eps = target_epsilon if target_epsilon is not None else self.epsilon
+        satisfied = bool(sel_error <= eps) if sel_error is not None else None
         return {
             "test_samples": n_samples,
             "test_exited": n_exit,
             "test_coverage": coverage,
             "test_selective_error": sel_error,
             "threshold": thresh,
-            "target_epsilon": self.epsilon,
+            "target_epsilon": eps,
             "bound_satisfied": satisfied,
         }
 

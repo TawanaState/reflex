@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""
-Generate Publication-Quality Pareto Analysis and Benchmark Comparison from Real Hardware Measurements.
-Loads:
-  1. experiments/real_ar_baseline_results.json (Real AR LLM gemma4:12b-it on DGX Spark)
-  2. experiments/canvas_latency_scaling.json (Real DiffusionGemma decoder scaling on GB10 GPU)
-  3. experiments/real_step1_probe_results.json (Real DiffusionGemma 26B 1-step denoise passes on GB10 GPU)
+"""Archived illustrative plotter; not a source of empirical Pareto points.
 
-Outputs:
-  - experiments/real_benchmark_comparison.json
-  - experiments/real_pareto_frontier.png
+It samples synthetic latencies and assumes exit error/coverage. Source is retained
+for audit, but direct execution is disabled. Plot only per-request measured traces.
 """
 
 import os
@@ -20,6 +14,7 @@ import matplotlib.ticker as ticker
 EXPERIMENTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def main():
+    raise RuntimeError("Retired: synthetic latencies and assumed risk make this plot non-empirical.")
     # 1. Load real data
     ar_path = os.path.join(EXPERIMENTS_DIR, "real_ar_baseline_results.json")
     scaling_path = os.path.join(EXPERIMENTS_DIR, "canvas_latency_scaling.json")

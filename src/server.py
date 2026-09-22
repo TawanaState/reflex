@@ -122,6 +122,7 @@ class ReflexMetadata(BaseModel):
     latency_ms: float
     confidence: float
     steps_executed: int
+    candidate_action: Optional[str] = None
 
 
 class ChatCompletionResponse(BaseModel):
@@ -247,6 +248,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
         latency_ms=round(out.latency_ms, 2),
         confidence=round(out.confidence, 4),
         steps_executed=out.steps_executed,
+        candidate_action=out.candidate_action,
     )
 
     response = ChatCompletionResponse(

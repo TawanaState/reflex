@@ -21,6 +21,8 @@ import numpy as np
 from typing import Dict, List, Any
 from peft import LoraConfig, get_peft_model
 from transformers import AutoTokenizer, DiffusionGemmaForBlockDiffusion, get_cosine_schedule_with_warmup
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.config import get_settings
 
 # Ensure deterministic execution
 SEED = 42
@@ -30,9 +32,9 @@ torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 
-MODEL_PATH = "/home/tawana/.cache/huggingface/hub/models--google--diffusiongemma-26B-A4B-it/snapshots/f7f5b7f5fa82ffc52addd066915886d497f5517b"
+MODEL_PATH = get_settings().DIFFUSION_GEMMA_PATH
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
-OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "reflex_lora_v1"))
+OUTPUT_DIR = os.path.abspath(os.environ.get("REFLEX_TRAIN_OUTPUT_DIR", os.path.join(os.path.dirname(__file__), "..", "models", "reflex_lora_v2")))
 
 
 def load_jsonl(filepath: str) -> List[Dict[str, Any]]:
@@ -58,6 +60,8 @@ def train_reflex_lora(
     print("=" * 80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type != "cuda":
+        raise RuntimeError("Training requires CUDA; refusing an accidental CPU run")
     print(f"Hardware: {device} ({torch.cuda.get_device_name(0)})")
 
     # 1. Load Tokenizer & Model
@@ -98,6 +102,7 @@ def train_reflex_lora(
 
     boolq_cal = load_jsonl(os.path.join(DATA_DIR, "boolq", "cal.jsonl"))[:100]
     banking_cal = load_jsonl(os.path.join(DATA_DIR, "banking77", "cal.jsonl"))[:100]
+    bfcl_cal = load_jsonl(os.path.join(DATA_DIR, "bfcl", "cal.jsonl"))
 
     # Create balanced multi-task training pool
     train_pool = []
@@ -127,6 +132,7 @@ def train_reflex_lora(
 
     model.train()
     history = []
+    validation_history = []
     accum_loss = 0.0
     accum_l_ce = 0.0
     accum_l_brier = 0.0
@@ -142,7 +148,7 @@ def train_reflex_lora(
         sample = train_pool[pool_idx % len(train_pool)]
         pool_idx += 1
 
-        prompt_text = sample["prompt"]
+        prompt_text = tokenizer.apply_chat_template([{"role": "user", "content": sample["prompt"]}], tokenize=False, add_generation_prompt=True)
         cand_token_ids = sample["candidate_token_ids"]
         target_token_id = sample["target_token_id"]
         gt_index = sample["ground_truth_index"]
@@ -246,8 +252,9 @@ def train_reflex_lora(
                 val_accs = []
                 val_briers = []
                 with torch.no_grad():
-                    for v_item in boolq_cal[:30] + banking_cal[:30]:
-                        v_p = tokenizer(v_item["prompt"], return_tensors="pt", truncation=True, max_length=512).to(device)
+                    for v_item in boolq_cal[:30] + banking_cal[:30] + bfcl_cal[:30]:
+                        v_prompt = tokenizer.apply_chat_template([{"role": "user", "content": v_item["prompt"]}], tokenize=False, add_generation_prompt=True)
+                        v_p = tokenizer(v_prompt, return_tensors="pt", truncation=True, max_length=512).to(device)
                         enc = model.model.encoder(input_ids=v_p.input_ids, attention_mask=v_p.attention_mask)
                         v_out = model(input_ids=None, past_key_values=enc.past_key_values, decoder_input_ids=canvas_tokens)
                         v_logits = v_out.logits[0, mask_pos, v_item["candidate_token_ids"]].float()
@@ -261,6 +268,7 @@ def train_reflex_lora(
                 mean_v_acc = float(np.mean(val_accs)) * 100.0
                 mean_v_br = float(np.mean(val_briers))
                 print(f"  >>> [Validation @ Step {step}] Step-1 Accuracy: {mean_v_acc:.2f}% | Brier Score: {mean_v_br:.4f}")
+                validation_history.append({"step": step, "accuracy": mean_v_acc, "brier_score": mean_v_br, "samples": len(val_accs)})
                 model.train()
 
     elapsed = time.time() - t_train_start
@@ -280,13 +288,17 @@ def train_reflex_lora(
         json.dump({
             "total_steps": total_steps,
             "training_time_seconds": elapsed,
-            "final_step1_accuracy": history[-1]["step1_accuracy"] if history else 0.0,
-            "final_brier_score": history[-1]["brier_score"] if history else 0.0,
+            "final_training_window_accuracy": history[-1]["step1_accuracy"] if history else 0.0,
+            "final_training_window_brier_score": history[-1]["brier_score"] if history else 0.0,
+            "final_validation_accuracy": validation_history[-1]["accuracy"] if validation_history else None,
+            "validation_history": validation_history,
+            "base_model": MODEL_PATH,
+            "seed": SEED,
             "history": history,
         }, f, indent=2)
 
     # Save also to experiments/
-    exp_log = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "experiments", "reflex_lora_training_log.json"))
+    exp_log = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "experiments", "reflex_lora_v2_training_log.json"))
     with open(exp_log, "w") as f:
         json.dump(history, f, indent=2)
 
@@ -300,7 +312,7 @@ if __name__ == "__main__":
         lr=2e-4,
         grad_accum_steps=4,
         lambda_brier=1.0,
-        lambda_diff=0.5,
+        lambda_diff=0.0,
         eval_interval=50,
     )
 

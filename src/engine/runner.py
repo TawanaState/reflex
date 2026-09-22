@@ -2,9 +2,9 @@
 KV-Warmed Tiered Execution Runner for Project Reflex.
 Orchestrates:
   - Phase 1: Step-1 discrete tool routing on micro-control canvas
-  - Tier 1: Zero-argument atomic fast-path (1 step, <130ms)
-  - Tier 2: Micro-argument canvas low-step unrolling (2-4 steps, <180ms)
-  - Tier 3: Generative canvas full unrolling (12-20 steps, ~350-500ms)
+  - Tier 1: Zero-argument atomic tool call after one decoder pass
+  - Tier 2: One explicit numeric argument extracted and validated from user text
+  - Tier 3: Multi-pass generative canvas, with required-field validation
   - Seamless in-memory KV-cache retention across tiers
 """
 
@@ -37,6 +37,7 @@ from .canvas import (
     ToolDefinition,
     compile_tools_to_schema,
     parse_and_validate_primitives,
+    extract_unambiguous_numeric_argument,
     parse_openai_tools,
 )
 from .scheduler import DynamicStepScheduler, ExecutionPlan
@@ -56,6 +57,7 @@ class EngineOutput:
     steps_executed: int
     prompt_tokens: int
     completion_tokens: int
+    candidate_action: Optional[str] = None
 
 
 class ReflexEngine:
@@ -112,11 +114,11 @@ class ReflexEngine:
         self.risk_gate = ConformalRiskGate(
             epsilon=self.settings.CONFORMAL_EPS,
             delta=0.05,
-            default_threshold=0.50,
-            bound_type="empirical_bernstein",
+            default_threshold=0.90,
+            bound_type="clopper_pearson",
         )
-        self.risk_gate.calibrated_lambda = 0.50
-        self.risk_gate.is_calibrated = True
+        # This is an explicit heuristic until a matching calibration artifact exists.
+        # Never mark a fixed threshold as statistically calibrated.
 
         self.scheduler = DynamicStepScheduler(
             default_generative_steps=self.settings.GENERATIVE_STEPS,
@@ -225,6 +227,16 @@ class ReflexEngine:
         temperature: float = 0.0,
     ) -> EngineOutput:
         """Entry point for inference generation."""
+        if tool_choice == "none":
+            tools = None
+        elif isinstance(tool_choice, dict):
+            forced_name = (tool_choice.get("function") or {}).get("name")
+            matches = [t for t in (tools or []) if (t.get("function") or {}).get("name") == forced_name]
+            if not forced_name or len(matches) != 1:
+                raise ValueError("tool_choice names no offered function")
+            tools = matches
+        latest_user_content = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+        user_text = latest_user_content if isinstance(latest_user_content, str) else ""
         prompt_text, images = self._parse_messages(messages, tools=tools)
         tensor_inputs = self._prepare_inputs(prompt_text, images)
         prompt_len = tensor_inputs["input_ids"].shape[1]
@@ -244,6 +256,7 @@ class ReflexEngine:
                 prompt_tokens=prompt_len,
                 tools=tools,
                 tool_choice=tool_choice,
+                user_text=user_text,
                 max_tokens=max_tokens or self.settings.MAX_CANVAS_LENGTH,
                 t0=t0,
             )
@@ -289,6 +302,7 @@ class ReflexEngine:
         prompt_tokens: int,
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Optional[Union[str, Dict[str, Any]]],
+        user_text: str,
         max_tokens: int,
         t0: float,
     ) -> EngineOutput:
@@ -354,6 +368,19 @@ class ReflexEngine:
                     max_tokens=max_tokens,
                     overall_conf=overall_conf,
                     t0=t0,
+                    candidate_action=selected_action,
+                )
+
+            # A low-confidence route must not become an executable tool call.
+            # Current threshold is heuristic until separately calibrated.
+            if not risk_result.is_safe_to_exit:
+                return self._unroll_generative_synthesis(
+                    past_kv=past_kv,
+                    prompt_tokens=prompt_tokens,
+                    max_tokens=max_tokens,
+                    overall_conf=overall_conf,
+                    t0=t0,
+                    candidate_action=selected_action,
                 )
 
             # Tool is identified! Inspect its schema complexity
@@ -364,7 +391,7 @@ class ReflexEngine:
             # =========================================================
             # TIER 1: ATOMIC ACTION (0 Args Required) -> 1 Forward Pass
             # =========================================================
-            if plan.tier == Tier.ATOMIC and (risk_result.is_safe_to_exit or overall_conf >= 0.50):
+            if plan.tier == Tier.ATOMIC:
                 step1_lat = (time.perf_counter() - t0) * 1000.0
                 call_id = f"call_{uuid.uuid4().hex[:8]}"
                 tool_call = {
@@ -389,55 +416,45 @@ class ReflexEngine:
                 )
 
             # =========================================================
-            # TIER 2: PARAMETRIC PRIMITIVE -> 2-4 Denoising Steps (L in [8, 24])
+            # TIER 2: PARAMETRIC PRIMITIVE -> EXPLICIT NUMERIC EXTRACTION
             # =========================================================
             if plan.tier == Tier.PARAMETRIC_PRIMITIVE:
-                arg_canvas = compile_tier2_argument_canvas(
-                    complexity=complexity,
-                    tokenizer=self.tokenizer,
-                    mask_token_id=self.mask_token_id,
-                    pad_token_id=self.pad_token_id,
-                )
-                c_tensor = arg_canvas.canvas_tokens.to(self.device)
-
-                prev_tokens = None
-                steps_done = 0
-
-                for step_i in range(plan.max_denoise_steps):
-                    out = self.model(input_ids=None, past_key_values=past_kv, decoder_input_ids=c_tensor)
-                    c_tensor = torch.argmax(out.logits, dim=-1)
-                    steps_done += 1
-
-                    # Convergence check: if argmax tokens stabilized across consecutive steps
-                    if plan.early_stopping and prev_tokens is not None and torch.equal(c_tensor, prev_tokens):
-                        break
-                    prev_tokens = c_tensor.clone()
-
+                # The v2 adapter was trained for action routing only. Do not turn
+                # an untrained value canvas into an executable numeric argument.
+                # Support the narrow case whose value is explicit and unambiguous.
+                parsed_args = extract_unambiguous_numeric_argument(user_text, complexity)
                 total_lat = (time.perf_counter() - t0) * 1000.0
-                decoded_str = self.tokenizer.decode(c_tensor[0], skip_special_tokens=True).strip()
-
-                # Extract and type-cast primitive arguments
-                parsed_args = parse_and_validate_primitives(decoded_str, complexity)
-                call_id = f"call_{uuid.uuid4().hex[:8]}"
+                if parsed_args is None:
+                    return EngineOutput(
+                        content="Unable to determine a unique valid numeric argument.",
+                        tool_calls=None,
+                        finish_reason="stop",
+                        execution_path="ARGUMENT_VALIDATION_FAILED",
+                        tier=Tier.PARAMETRIC_PRIMITIVE.value,
+                        latency_ms=total_lat,
+                        confidence=overall_conf,
+                        steps_executed=1,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=0,
+                        candidate_action=selected_action,
+                    )
                 tool_call = {
-                    "id": call_id,
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
                     "type": "function",
-                    "function": {
-                        "name": selected_action,
-                        "arguments": json.dumps(parsed_args),
-                    },
+                    "function": {"name": selected_action, "arguments": json.dumps(parsed_args)},
                 }
                 return EngineOutput(
                     content=None,
                     tool_calls=[tool_call],
                     finish_reason="tool_calls",
-                    execution_path="TIER_2_PARAMETRIC_PRIMITIVE",
+                    execution_path="TIER_2_EXPLICIT_NUMERIC_EXTRACTION",
                     tier=Tier.PARAMETRIC_PRIMITIVE.value,
                     latency_ms=total_lat,
                     confidence=overall_conf,
-                    steps_executed=1 + steps_done,
+                    steps_executed=1,
                     prompt_tokens=prompt_tokens,
-                    completion_tokens=arg_canvas.canvas_length,
+                    completion_tokens=0,
+                    candidate_action=selected_action,
                 )
 
             # =========================================================
@@ -455,9 +472,28 @@ class ReflexEngine:
             total_lat = (time.perf_counter() - t0) * 1000.0
             generated_text = self.tokenizer.decode(gen_canvas[0], skip_special_tokens=True).strip()
 
+            # A generated payload is an executable tool call only when it parses
+            # and all declared required fields pass validation.
+            try:
+                raw_arguments = json.loads(generated_text)
+            except json.JSONDecodeError:
+                raw_arguments = None
+            parsed_args = parse_and_validate_primitives(generated_text, complexity) if isinstance(raw_arguments, dict) else {}
+            if not isinstance(raw_arguments, dict) or any(name not in parsed_args for name in complexity.required_parameters):
+                return EngineOutput(
+                    content="Unable to produce valid required tool arguments.",
+                    tool_calls=None,
+                    finish_reason="stop",
+                    execution_path="ARGUMENT_VALIDATION_FAILED",
+                    tier=Tier.GENERATIVE_SYNTHESIS.value,
+                    latency_ms=total_lat,
+                    confidence=overall_conf,
+                    steps_executed=1 + steps_done,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=gen_len,
+                )
             call_id = f"call_{uuid.uuid4().hex[:8]}"
-            # If generated text looks like JSON, preserve it; otherwise wrap
-            arg_str = generated_text if "{" in generated_text else json.dumps({"input": generated_text})
+            arg_str = json.dumps(parsed_args)
             tool_call = {
                 "id": call_id,
                 "type": "function",
@@ -486,6 +522,7 @@ class ReflexEngine:
         max_tokens: int,
         overall_conf: float,
         t0: float,
+        candidate_action: Optional[str] = None,
     ) -> EngineOutput:
         """Handles pure text generation when no tool is invoked."""
         gen_len = min(max_tokens, self.settings.MAX_CANVAS_LENGTH)
@@ -510,5 +547,6 @@ class ReflexEngine:
             steps_executed=1 + steps,
             prompt_tokens=prompt_tokens,
             completion_tokens=gen_len,
+            candidate_action=candidate_action,
         )
 

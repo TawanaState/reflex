@@ -1,101 +1,89 @@
-# TASK BRIEF: Tiered Adaptive Compute for Parametric Tool Calls & Schema-Aware Step Scheduling
+# Project Reflex: evidence-first repair brief
 
-You are the **Lead ML Systems Engineer** on **Project Reflex**. The server and base hybrid runtime are operational. 
+You are an autonomous ML systems engineer with terminal access to this repository and the DGX Spark. Improve the existing routing, typed argument, generation, calibration, and serving functions, then produce an honest reproducible research artifact. Read README.md, RESULTS.md, NOTES.md, PROPOSAL.md, all source and experiment scripts, tests, datasets, model metadata, and raw artifacts. Verify every finding below against the current code. Research relevant primary literature yourself before claiming novelty. Do not add product features.
 
-Your objective is to implement **Schema-Conditioned Low-Step Denoising**: an adaptive step scheduler that allocates compute dynamically based on parameter schema complexity. When a tool requires primitive arguments (integers, floats, enums, bounded choices), the engine must allocate a compact micro-canvas and execute only **1 to 4 denoising steps**, rather than burning 15–20 steps on predictable, low-entropy data. Full 15–20 step denoising must be strictly reserved for open-ended string generation and free-form code/text.
+## Current checkpoint: read this before the historical audit list
 
-You must build this with **clean modularization** so the engine is decoupled, readable, and trivial to unit test and debug.
+The numbered findings below describe the **v1 starting state**, not the current working tree. `NOTES.md` is the chronological implementation log. On 2026-09-22 the owner asked for incremental repairs and deferred credential work. Completed: BoolQ token IDs and BFCL official-answer labels repaired without changing split IDs; chat-format v2 adapter trained and saved in `models/reflex_lora_v2` with provenance; schema parser rejects missing/invalid required primitive fields; optional properties are no longer called atomic; the live server uses an explicitly uncalibrated 0.90 heuristic and withholds low-confidence or invalid tool calls; the risk-calibration helper now searches a simultaneous fixed grid and reports zero-exit selective error as undefined; correctness-aware benchmark traces and honest README/RESULTS were added. The GB10 server is running v2 on port 8090. Use `/admin/reload` for narrow engine changes; a full process restart costs roughly five minutes of checkpoint loading.
 
----
+The **measured local v2 result** is 40/40 correct BFCL-derived tool names in original order and 40/40 after a deterministic candidate permutation, all one-step atomic calls (`experiments/bfcl_routing_v2_20260922T084010Z.jsonl`). Two exact test queries also occur in train with different menus, so this is exploratory and not an official BFCL score. The corrected v2 training validation was 61.11% on a 90-item mixed calibration sample, not held-out test. A three-case repeated API probe initially showed numeric arguments 0/5 because the untrained value canvas emitted `level=1` for 57. The deployed narrow repair now extracts one explicit valid numeric literal deterministically after learned routing: atomic 5/5, numeric 5/5, free-text email 0/5 (`experiments/tiered_latency_traces_20260922T082929Z.jsonl`). Ambiguous and out-of-range numeric requests abstain. **Do not claim learned Tier-2 argument synthesis or working free-text tool calls.**
 
-### CORE ARCHITECTURAL PRINCIPLE: COMPUTE MATCHES ENTROPY
+Highest-value next work: (1) make free-text required arguments genuinely valid using the official DiffusionGemma generation procedure or a trained argument objective, and measure full-path quality; (2) build an independent no-overlap routing and argument evaluation set with varied prompts and menus; (3) compare a base model and matched baselines at equal task quality, and measure uncertainty; (4) calibrate useful exits on a separate sample with model/prompt/menu binding, then report independent test coverage and risk; (5) retire or unmistakably label any chart code with inserted or random data. Keep per-item traces and update `NOTES.md` as each result is obtained. Avoid retraining the 26B model until an evaluation shows the specific failure and the training target matches it.
 
-1. **Tier 1: Atomic Action (No Args)**
-   * *Schema:* Tool with 0 required parameters.
-   * *Canvas:* Micro-control canvas ($L \le 8$).
-   * *Budget:* **1 forward pass** (~110ms) via Step-1 logit extraction.
-2. **Tier 2: Parametric Primitive (Ints, Floats, Enums, Bounded Identifiers)**
-   * *Schema:* Tool parameters are typed as `int`, `float`, `bool`, or `enum` (e.g., `set_volume(level: int)`, `transfer(amount: float, currency: enum)`).
-   * *Canvas:* Sized strictly to expected parameter footprint ($L \in [8, 24]$ tokens).
-   * *Budget:* **2 to 4 denoising steps** (~130–160ms total). Low-entropy primitives stabilize within 2–3 iterations over the warm prompt KV cache.
-3. **Tier 3: Open Generative Synthesis (Unbounded Strings / Code)**
-   * *Schema:* Tool parameters contain free-form text/strings (e.g., `send_email(body: str)`, `generate_sql(query: str)`).
-   * *Canvas:* Generative buffer ($L \in [64, 256]$ tokens).
-   * *Budget:* **12 to 20 denoising steps** (~350–500ms).
+## Ground rules
 
----
+- Preserve models/reflex_lora_v1 as an archived adapter. Retrain only into a versioned new directory. Record exact base-model revision, adapter hash, data hashes, package versions, GPU state, and commands.
+- The server is currently running a real model on an NVIDIA GB10; do not restart it casually or load another 26B model concurrently. Schedule GPU experiments and keep per-run logs.
+- Never hard-code, simulate, extrapolate, or insert accuracy, latency quantiles, coverage, or frontier points into a table or chart labeled empirical. Mark historical invalid artifacts as superseded; keep raw data.
+- Make small, focused changes and tests; prioritize correctness and evidence over architecture churn.
+- Keep secrets out of new code and outputs. The owner has deferred credential rotation; focus on project correctness and evidence. Do not embed privileged service commands in a benchmark.
 
-### REFACTORING & MODULARIZATION PLAN
+## Verified starting findings (2026-09-22)
 
-Refactor the execution pipeline into clean, single-responsibility modules under `src/`:
+1. results/final_pareto_benchmark_results.json records 43/100 Step-1 test correctness: 43/75 BoolQ and 0/25 Banking77. RESULTS.md says 62.5%, which is a training-window metric in training_history.json, not held-out performance. The AR artifact records 64/100, with 63/75 BoolQ and 1/25 Banking77. Report each task separately and investigate the near-zero Banking77 result.
+2. For every tested epsilon, the risk artifact has 0/150 calibration exits and 0/100 test exits. Thus “0% error on exits” is vacuous. In src/risk_gate.py, zero exits are reported as zero error and bound_satisfied True; report selective error as undefined or N/A at zero coverage. Its threshold scan uses pointwise bounds over 500 selected thresholds without correcting for selection, and chooses the first high-confidence threshold, not the best useful coverage. Research a valid finite-sample selective-risk procedure before using guarantee language.
+3. In src/engine/runner.py, the server initializes its gate with a hard-coded 0.50 threshold and is_calibrated=True. The atomic branch also permits overall_conf >= 0.50 independent of gate approval. No versioned calibration artifact is loaded. One-tool restricted softmax confidence is 1 by construction. The published gate is not deployed.
+4. On the live GB10 server, “Mute audio now” returned mute_audio {}, but “Set volume to 57” and “Write an email to Alice apologizing for the delay” also returned mute_audio {} via the atomic path, with approximately 266 and 289 ms engine latency. Reproduce with stable fixtures and candidate-order permutations. An HTTP 200 and valid empty JSON do not mean a correct tool call.
+5. experiments/tiered_latency_results.json reports Tier-2 exact numeric argument accuracy of 20% (2/10), mean wall latency 367 ms, p95 606 ms. README claims less than 180 ms. The benchmark script had syntax errors and duplicate keyword arguments; the simple syntax repair was made during this audit, but the old JSON lacks reproducible provenance. The script must check response status, selected tool, tier, steps, required arguments, and semantic validity for every trial; wrong-tier responses cannot be silently counted in requested-tier latency.
+6. scripts/prepare_datasets.py assigns ground_truth_index=0 to every BFCL record. All committed BFCL train, calibration, and test records have label zero. This is a candidate-order assumption, not verified BFCL ground truth. It invites a positional shortcut. Use official answer files and evaluation, or clearly define a validated routing subset. Shuffle candidate order and remap gold labels. Exclude ambiguous, parallel, or no-call cases unless explicitly supported. Current BFCL claims are unsupported.
+7. experiments/benchmark_pareto_suite.py times some real work but inserts fixed diffusion accuracy of 88%, invented cascade latency and accuracy, expanded-path accuracy of 92%, and a single expansion-step timing as if it were a complete expanded request; it derives p95 from a mean. experiments/generate_real_pareto_analysis.py also samples random latencies. The Pareto chart is illustrative, not empirical. RESULTS.md’s statement that no numbers are simulated is false for the whole table.
+8. experiments/test_kv_retention_timing.py appears to time real GPU calls: roughly 236.72 ms prefill, 76.76 ms four-token decoder pass, and 123.86 ms 64-token decoder pass with cached prompt KV. Rerun to confirm. This is useful microbenchmark evidence for avoiding prompt re-encoding, but does not time full 12–20-step generation or prove a new caching mechanism. DiffusionGemma already uses prompt KV caching.
+9. experiments/train_reflex_lora.py performs real forward/backward work and the adapter exists. Its “diffusion loss” predicts visible bracket/pad tokens rather than training noisy-to-clean multi-step denoising. The learned task is one-slot classification; it does not teach typed arguments or generative tool payloads. Training-window accuracy/Brier are not held-out quality. Its model path is machine-specific. Verify hard-coded candidate IDs against the pinned tokenizer.
+10. src/engine/runner.py and src/runtime.py repeat whole-canvas argmax rather than the official diffusion sampler’s token commitment, renoising, self-conditioning, timestep schedule, and stopping criteria. Replacing every seeded token with argmax defeats JSON syntax seeding. src/engine/canvas.py can return missing required keys, coerce an invalid enum to its first value, and convert invalid boolean text to False. Tier 3 may wrap arbitrary text in an input key even when the schema requires other keys. Measure actual parse, schema, argument, and task correctness.
+11. src/schema/inspector.py calls tools with optional properties atomic and discards those properties. The API accepts tool_choice without enforcing it. Streaming starts after synchronous generation; usage counts use allocated canvas length. These are fidelity issues, but tool selection and required args are highest priority.
+12. The 13 unittest tests pass in about 0.02 seconds and mainly cover small synthetic cases. The GPU integration scripts are standalone and do not run in that command. The default server binds broadly, /admin/reload has no authentication, and remote image URLs are fetched. Review these before public deployment. Check that an actual LICENSE file supports the stated Apache-2.0 license.
+13. The AR comparison uses a different model size, quantization, inference engine, and output format. The fixed 256-token 20-step diffusion point is costly by design. The 76–83 ms KV-hit is a decoder-only component and requires an existing prompt cache. Do not compare it directly to another system’s end-to-end request. The headline 3.4x/11.5x claims are not quality-matched end-to-end speedups.
 
-```text
-src/
-├── config.py             # Environment & model runtime configs
-├── schema/
-│   ├── inspector.py      # Inspects tool JSON schemas and classifies into Tier 1, 2, or 3
-│   └── compiler.py       # Compiles schemas into canvas slot indices & candidate token sets
-├── engine/
-│   ├── scheduler.py      # Dynamic step allocator: maps Tier & entropy to optimal denoise steps
-│   ├── canvas.py         # Canvas memory allocation, mask indexing, and seeded templates
-│   └── runner.py         # Causal encoder pass, prompt KV retention, and bidirectional diffusion steps
-└── server.py             # FastAPI OpenAI-compatible routing (/v1/chat/completions)
+## Research and positioning
 
-```
+Read and cite these primary sources, then search for more recent relevant work:
+- Google DiffusionGemma developer guide: https://developers.googleblog.com/diffusiongemma-the-developer-guide/
+- Official model card and sampler settings: https://huggingface.co/google/diffusiongemma-26B-A4B-it
+- Transformers generation algorithm: https://huggingface.co/docs/transformers/en/model_doc/diffusion_gemma
+- Diffusers scheduler: https://huggingface.co/docs/diffusers/main/en/api/pipelines/diffusion_gemma
+- TypeSafe Jev announcement: https://typesafe.ai/blog/introducing-system-one-models-and-jev
+- Adaptive diffusion decoding and caching: https://arxiv.org/abs/2506.00413 and https://arxiv.org/abs/2509.26432 and https://arxiv.org/abs/2509.24007
+- Selective conformal risk: https://arxiv.org/abs/2512.12844 and https://arxiv.org/abs/2603.24704 and https://people.eecs.berkeley.edu/~angelopoulos/publications/downloads/conformal-risk.pdf
+- Official BFCL methodology: https://gorilla.cs.berkeley.edu/leaderboard
 
-#### Detailed Deliverables
+The potentially defensible contribution is an open single-backbone serving policy with compact control reads, adaptive typed-argument/generative compute, prompt KV reuse, and a measured accuracy/coverage/latency tradeoff. The ingredients are prior art. Do not claim a new diffusion architecture, universal safety guarantee, or first KV reuse.
 
-##### 1. `src/schema/inspector.py` (Schema Complexity Classifier)
+## Work plan
 
-Implement `inspect_tool_schema(tool_def: dict) -> ToolComplexity`:
+### Phase 0: Make claims auditable
+- Record Git commit, dependency versions, hardware and server state, exact model and tokenizer revisions, input and output hashes. Preserve old artifacts. Flag old figures and the tiered JSON as unfit for paper claims pending reproduction.
+- Correct README.md, RESULTS.md, PROPOSAL.md, and NOTES.md. Separate proposed, implemented, measured, estimated, and unsupported statements. Retract zero-error guarantee, unmeasured accuracies, unqualified speedups, less-than-180-ms Tier-2 claim, and unsupported 80% agent-step prevalence. Add a limitations table.
+- Privileged service management has been removed from the Pareto benchmark. The owner is handling credential rotation separately. Add LICENSE only if the owner intends that license.
 
-* Traverses the tool's JSON schema `parameters.properties`.
-* If no properties $\rightarrow$ `Tier.ATOMIC` (Budget: 1 step).
-* If all required properties are `integer`, `number`, `boolean`, or `enum` $\rightarrow$ `Tier.PARAMETRIC_PRIMITIVE` (Budget: 2–4 steps, calculate max token length $L$).
-* If any property is an unconstrained `string` $\rightarrow$ `Tier.GENERATIVE_SYNTHESIS` (Budget: default full steps).
+### Phase 1: Repair correctness
+- Freeze a hand-audited routing set containing atomic, numeric/enum/bool primitive, free-text, no-tool, ambiguous, and order-permutation examples. Include the two failed live calls. Store example IDs, allowed tools, gold tool, exact required arguments, and scoring rule.
+- Repair BFCL labeling with official ground truth or build a small valid tool-routing subset. Pin source versions; verify split and near-duplicate independence; randomize candidate positions. Recheck Banking77 label/token mapping and class balance.
+- Match training and serving prompt templates and candidate token mapping. Trace whether the LoRA learned option zero. Evaluate base vs adapter and shuffled order before retraining. Retrain only if a validated dataset and clear objective justify it.
+- Support explicit no-tool/direct-response when allowed and honor tool_choice. Do not treat a one-option softmax as evidence of safety.
+- For Tier 2, preserve seeded syntax by updating only value slots; train on or otherwise validate the actual argument task. Strictly validate required fields, types, ranges, and enums. Fail or escalate when invalid; never emit {} as a successful call requiring fields. Measure wrong-tool, exact-value, parse, and schema-valid rates separately.
+- For Tier 3, generate keys required by the selected schema. Compare quality and latency against official DiffusionGemma sampling. If a shortened custom sampler harms correctness, use the official sampler and record its cost. Explain any custom sampler differences.
 
-##### 2. `src/engine/scheduler.py` (Adaptive Step Allocator)
+### Phase 2: Calibrate useful exits
+- Remove hard-coded calibrated state and the >=0.50 override. Load a versioned calibration artifact bound to model, adapter, prompt template, tool vocabulary, and task distribution. When absent or mismatched, fail closed or explicitly label uncalibrated operation.
+- Define the exit loss as wrong tool and, for whole-call exit, invalid or wrong required arguments. Use a statistically valid threshold selection procedure with finite-sample assumptions stated. Show calibration count, exits/errors, confidence level, upper bound, independent test coverage and error, and per-task breakdown. Use N/A for risk at zero exits.
+- Seek nonzero coverage at a declared risk tolerance. If none is possible, report it; a gate abstaining on everything has no fast-path product benefit.
 
-Implement `DynamicStepScheduler`:
+### Phase 3: Rebenchmark fairly
+- Replace aggregate-only outputs with per-request JSONL traces: immutable example ID and task, gold answer, checkpoint/config hashes, selected tool/arguments, correctness fields, path, actual forward count, canvas and prompt lengths, CUDA phase times, wall end-to-end latency, warm/cold cache state, and errors.
+- Benchmark the same frozen held-out examples across base DiffusionGemma official sampling, one-step base, one-step adapter, adapter plus calibrated gate, fixed-budget adapter, and a correctly configured AR tool-calling baseline. Include a real classifier cascade only if actually implemented. Keep task format and output constraints aligned; disclose quantization and model-size differences.
+- Time first request, warmed full request, and decoder-only KV hit separately. Randomize trial order and report sample count, p50, p95, mean, and uncertainty. Time complete multi-step expansion. Plot only measured accuracy/coverage vs measured latency at comparable quality. Include cache, LoRA, gate, and tier ablations.
+- Make focused schema/routing/calibration unit tests and GPU integration tests discoverable as separate gates. Test the official OpenAI SDK, tool_choice, required args, errors, and server concurrency. Protect /admin/reload, choose a safe binding/auth policy, and constrain remote image fetching before public exposure. Do not build unrelated features.
 
-* Calculates execution plan: `(canvas_length, denoise_steps, candidate_mask)`.
-* For Tier 2 calls, sets `max_steps = 3` (or adaptive early stopping if argmax tokens stabilize across 2 consecutive steps).
-* Exposes clean debug logs: `[SCHEDULER] Tool: transfer | Tier: PRIMITIVE | Canvas: 16 | Steps: 3`.
+## Acceptance and deliverables
 
-##### 3. `src/engine/runner.py` (KV-Warmed Micro-Expansion)
+Release an honest experimental repo or technical write-up once documentation matches reproduced evidence, even if results are negative. A paper needs a nontrivial held-out routing and argument success rate, nonzero calibrated exit coverage at the claimed risk, a quality-matched latency or Pareto gain, true ground truth, per-item traces, uncertainty, relevant baselines, ablations, and modest novelty framing. If those do not materialize, present a negative/early systems report instead of a breakthrough claim.
 
-Ensure the micro-argument canvas directly reuses the initial prompt KV cache:
+Deliver corrected code and focused tests, versioned data/calibration/model manifests, raw per-item traces, figure generation with no invented observations, revised documentation, and a final claim-by-claim table marking each old claim supported, corrected, or retracted. Give separate go/no-go recommendations for public repo, technical blog, preprint, and conference paper.
 
-* Phase 1 resolves tool choice on Step 1.
-* If Tier 2, inject argument template (e.g., `amt: [ @ @ @ ] \n curr: [ @ ]`), allocate only the required slice, and run 2–3 reverse diffusion iterations.
-* Decode and validate extracted primitives against expected types (`int(val)`, `float(val)`).
+## Proposal-to-code gap checklist
 
----
+PROPOSAL.md describes dedicated new tokenizer tokens and embedding optimization, vLLM runtime patches, multi-field slots frozen while another field denoises, direct GPU-millisecond compute regularization, 0.1% to 0.5% selective error guarantees, and OSWorld/Mind2Web evaluation. None of these are established by the current serving and experiment code. The runtime uses Transformers/PyTorch, mostly one masked control position and pre-existing token IDs; the displayed multi-field mixed canvas and in-flight vLLM scheduler expansion are proposals. Audit each proposal statement against an implementation path and either implement it because the core method requires it, or relabel/remove it. Avoid adding these large features just to match prose. In particular, do not conflate reusing the original prompt cache for a new canvas with appending finalized control tokens into that cache; verify whether control decisions actually condition the expanded output.
 
-### VERIFICATION & BENCHMARKING
+## Closest direct prior implementation
 
-1. **Zero Mocking:** All execution must run on actual GPU weights through the diffusion graph. Do not simulate latency or fake step outputs.
-2. **Unit & Integration Tests (`tests/test_tiered_compute.py`):**
-* Test Tier 1 call (atomic routing): Verify completion in 1 step ($<130\text{ ms}$).
-* Test Tier 2 call (integer/float parameter tool): Verify completion in $\le 4$ steps ($<180\text{ ms}$) and verify argument parsing.
-* Test Tier 3 call (open string parameter tool): Verify full generative expansion and output validity.
-
-
-3. **Benchmark Script (`experiments/benchmark_tiered_latency.py`):**
-* Measure and compare:
-* Tier 1 Latency (p50/p95)
-* Tier 2 Latency (p50/p95) vs. Fixed 20-step baseline
-* Argument accuracy (% valid parsed primitives)
-
-
-* Save outputs to `experiments/tiered_latency_results.json`.
-
-
-
----
-
-### OPERATIONAL DIRECTIVE
-
-1. Maintain `NOTES.md` continuously with implementation decisions, commands executed, and measured latency traces.
-2. Do not break existing server endpoints (`/v1/chat/completions`) or overwrite validated model weights (`models/reflex_lora_v1/`).
-3. Begin by creating `src/schema/inspector.py`, verify with a standalone test, and integrate into `src/engine/runner.py`.
+Inspect https://github.com/vllm-project/vllm/pull/57250 and https://github.com/mmastrac/djev-spark . As of this audit, the PR already demonstrates seeded short DiffusionGemma canvases, single-step read-only output, constrained token log probabilities, pinned positions, and a structured-decision server on a DGX Spark. This materially narrows the novelty of the proposed Step-1 micro-canvas. The paper must state exactly what Reflex implements beyond this prior work and benchmark against it where practical. The strongest possible differentiators to test are correct typed arguments, conditional generation with measured full-path quality, and statistically valid useful selective exits. If those differentiators fail, frame the work as an independent prototype and replication with honest engineering lessons.

@@ -1,236 +1,115 @@
 #!/usr/bin/env python3
-"""
-Benchmark: Empirical Latency & Scaling across Adaptive Compute Tiers.
-Measures:
-  - Tier 1: Atomic (1 step)
-  - Tier 2: Parametric Primitive (2-4 steps) vs. Fixed 20-step baseline
-  - Tier 3: Generative Synthesis (12-20 steps)
-Saves results to experiments/tiered_latency_results.json.
-"""
+"""End-to-end tier benchmark with per-request correctness and latency traces."""
 
 import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
 import requests
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config import get_settings
 
 
-def run_tiered_benchmark(num_trials: int = 10):
+def tool(name, description, properties=None, required=None):
+    return {"type": "function", "function": {
+        "name": name, "description": description,
+        "parameters": {"type": "object", "properties": properties or {}, "required": required or []},
+    }}
+
+
+TOOLS = [
+    tool("mute_audio", "Mute system audio"),
+    tool("set_volume", "Set system volume percentage", {"level": {"type": "integer", "minimum": 0, "maximum": 100}}, ["level"]),
+    tool("write_email", "Draft an email", {"recipient": {"type": "string"}, "body": {"type": "string"}}, ["recipient", "body"]),
+]
+CASES = [
+    {"id": "atomic", "prompt": "Mute system audio now", "gold_tool": "mute_audio", "gold_tier": "atomic", "gold_args": {}},
+    {"id": "primitive", "prompt": "Set system volume to 57 percent", "gold_tool": "set_volume", "gold_tier": "parametric_primitive", "gold_args": {"level": 57}},
+    {"id": "generative", "prompt": "Draft an email to alice@example.com apologizing for the delay", "gold_tool": "write_email", "gold_tier": "generative_synthesis", "gold_args": None},
+]
+
+
+def summarize_latency(rows, field):
+    vals = [row[field] for row in rows if row.get(field) is not None]
+    if not vals:
+        return None
+    return {"count": len(vals), "mean": float(np.mean(vals)), "p50": float(np.percentile(vals, 50)), "p95": float(np.percentile(vals, 95))}
+
+
+def run_tiered_benchmark(num_trials=10, base_url=None):
     settings = get_settings()
-    endpoint = f"http://{settings.HOST}:{settings.PORT}/v1/chat/completions"
-
-    print("=" * 80)
-    print("PROJECT REFLEX: EMPIRICAL TIERED ADAPTIVE COMPUTE BENCHMARK")
-    print(f"Hardware: NVIDIA GB10 Blackwell SoC (Bare-Metal GPU Execution)")
-    print(f"Endpoint: {endpoint} (Trials per tier: {num_trials})")
-    print("=" * 80)
-
-    tools = [
-        # Tier 1
-    # Tool definitions per Tier
-    t1_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "mute_audio",
-                "description": "Mutes system audio output",
-                "description": "Mutes audio",
-                "parameters": {"type": "object", "properties": {}, "required": []},
-            },
+    host = "127.0.0.1" if settings.HOST in ("0.0.0.0", "::") else settings.HOST
+    base_url = base_url or f"http://{host}:{settings.PORT}"
+    endpoint = f"{base_url}/v1/chat/completions"
+    health = requests.get(f"{base_url}/health", timeout=10).json()
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    trace_path = Path(__file__).with_name(f"tiered_latency_traces_{run_id}.jsonl")
+    cases = CASES
+    all_rows = []
+    with trace_path.open("w", encoding="utf-8") as trace:
+        for case in cases:
+            for trial in range(num_trials):
+                request = {"model": settings.MODEL_ID, "messages": [{"role": "user", "content": case["prompt"]}], "tools": TOOLS, "max_tokens": 64}
+                row = {"run_id": run_id, "case_id": case["id"], "trial": trial, "gold_tool": case["gold_tool"], "gold_tier": case["gold_tier"], "gold_args": case["gold_args"]}
+                start = time.perf_counter()
+                try:
+                    response = requests.post(endpoint, json=request, timeout=60)
+                    row["wall_latency_ms"] = (time.perf_counter() - start) * 1000
+                    row["http_status"] = response.status_code
+                    response.raise_for_status()
+                    data = response.json()
+                    meta = data.get("reflex_metadata") or {}
+                    row["engine_latency_ms"] = meta.get("latency_ms")
+                    row["execution_path"] = meta.get("execution_path")
+                    row["actual_tier"] = meta.get("tier")
+                    row["steps_executed"] = meta.get("steps_executed")
+                    calls = (data.get("choices") or [{}])[0].get("message", {}).get("tool_calls") or []
+                    row["actual_tool"] = calls[0]["function"]["name"] if calls else None
+                    raw_args = calls[0]["function"]["arguments"] if calls else None
+                    row["raw_arguments"] = raw_args
+                    try:
+                        args = json.loads(raw_args) if raw_args is not None else None
+                    except (TypeError, json.JSONDecodeError):
+                        args = None
+                    row["json_object"] = isinstance(args, dict)
+                    row["route_correct"] = row["actual_tool"] == case["gold_tool"]
+                    row["tier_correct"] = row["actual_tier"] == case["gold_tier"]
+                    if case["id"] == "atomic":
+                        row["argument_correct"] = args == {}
+                    elif case["id"] == "primitive":
+                        row["argument_correct"] = args == case["gold_args"]
+                    else:
+                        row["argument_correct"] = isinstance(args, dict) and args.get("recipient") == "alice@example.com" and isinstance(args.get("body"), str) and bool(args["body"].strip())
+                    row["call_correct"] = bool(row["route_correct"] and row["tier_correct"] and row["argument_correct"])
+                except Exception as exc:
+                    row["wall_latency_ms"] = (time.perf_counter() - start) * 1000
+                    row["error"] = str(exc)
+                    row["call_correct"] = False
+                trace.write(json.dumps(row) + "\n")
+                trace.flush()
+                all_rows.append(row)
+                print(f"{case['id']} trial={trial} correct={row['call_correct']} route={row.get('actual_tool')} tier={row.get('actual_tier')} wall_ms={row['wall_latency_ms']:.1f}")
+    summary = {"run_id": run_id, "server_health": health, "num_trials_per_case": num_trials, "trace_file": str(trace_path), "cases": {}}
+    for case in cases:
+        rows = [row for row in all_rows if row["case_id"] == case["id"]]
+        correct = [row for row in rows if row["call_correct"]]
+        summary["cases"][case["id"]] = {
+            "gold_tool": case["gold_tool"], "gold_tier": case["gold_tier"],
+            "call_correct": len(correct), "total": len(rows), "call_accuracy": len(correct) / len(rows),
+            "all_wall_latency_ms": summarize_latency(rows, "wall_latency_ms"),
+            "correct_call_wall_latency_ms": summarize_latency(correct, "wall_latency_ms"),
+            "all_engine_latency_ms": summarize_latency(rows, "engine_latency_ms"),
         }
-    ]
-    t2_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "mute_audio",
-                "description": "Mutes audio",
-                "parameters": {"type": "object", "properties": {}, "required": []},
-            },
-        },
-        # Tier 2
-        {
-            "type": "function",
-            "function": {
-                "name": "set_volume",
-                "description": "Sets the master volume level",
-                "description": "Sets volume level",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"level": {"type": "integer", "description": "Volume 0-100"}},
-                    "required": ["level"],
-                },
-            },
-        },
-        # Tier 3
-    ]
-    t3_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "compose_summary",
-                "description": "Writes a detailed summary of a document",
-                "name": "mute_audio",
-                "description": "Mutes audio",
-                "parameters": {"type": "object", "properties": {}, "required": []},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write_email",
-                "description": "Drafts and sends an email message with custom text",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
-                    "properties": {
-                        "recipient": {"type": "string", "description": "Email address"},
-                        "body": {"type": "string", "description": "Free-form email content"},
-                    },
-                    "required": ["recipient", "body"],
-                },
-            },
-        },
-    ]
-
-    # Warmup
-    print("\nWarming up engine kernels...")
-    requests.post(endpoint, json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": "Mute"}], "tools": tools}, timeout=60)
-    requests.post(endpoint, json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": "Mute"}], "tools": t1_tools}, timeout=60)
-
-    # 1. Benchmark Tier 1 (Atomic)
-    print("\n[1/3] Benchmarking Tier 1: Atomic (1-Step Fast Path)...")
-    t1_wall_latencies = []
-    t1_engine_latencies = []
-    for i in range(num_trials):
-        t0 = time.perf_counter()
-        resp = requests.post(
-            endpoint,
-            json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": "Mute audio now"}], "tools": tools},
-            json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": "Mute audio now"}], "tools": t1_tools},
-            timeout=30,
-        )
-        lat = (time.perf_counter() - t0) * 1000.0
-        t1_wall_latencies.append(lat)
-        data = resp.json()
-        t1_engine_latencies.append(data.get("reflex_metadata", {}).get("latency_ms", lat))
-
-    # 2. Benchmark Tier 2 (Parametric Primitive)
-    print("\n[2/3] Benchmarking Tier 2: Parametric Primitive (2-4 Steps Micro-Canvas)...")
-    t2_wall_latencies = []
-    t2_engine_latencies = []
-    t2_valid_parses = 0
-    for i in range(num_trials):
-        t0 = time.perf_counter()
-        resp = requests.post(
-            endpoint,
-            json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": f"Set volume to {50 + i}"}], "tools": tools},
-            json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": f"Set volume to {50 + i}"}], "tools": t2_tools},
-            timeout=30,
-        )
-        lat = (time.perf_counter() - t0) * 1000.0
-        t2_wall_latencies.append(lat)
-        data = resp.json()
-        meta = data.get("reflex_metadata", {})
-        t2_engine_latencies.append(meta.get("latency_ms", lat))
-        tc = data.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])
-        if tc:
-            try:
-                args = json.loads(tc[0]["function"]["arguments"])
-                if isinstance(args, dict):
-                if isinstance(args, dict) and args.get("level") == (50 + i):
-                    t2_valid_parses += 1
-            except Exception:
-                pass
-
-    # 3. Benchmark Tier 3 (Generative Synthesis)
-    print("\n[3/3] Benchmarking Tier 3: Generative Synthesis (12-20 Steps Full Canvas)...")
-    t3_wall_latencies = []
-    t3_engine_latencies = []
-    for i in range(num_trials):
-        t0 = time.perf_counter()
-        resp = requests.post(
-            endpoint,
-            json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": "Summarize the history of discrete diffusion models in computing."}], "max_tokens": 64},
-            json={"model": settings.MODEL_ID, "messages": [{"role": "user", "content": "Write an email to Alice apologizing for the delay"}], "tools": t3_tools, "max_tokens": 64},
-            timeout=60,
-        )
-        lat = (time.perf_counter() - t0) * 1000.0
-        t3_wall_latencies.append(lat)
-        data = resp.json()
-        t3_engine_latencies.append(data.get("reflex_metadata", {}).get("latency_ms", lat))
-
-    # Aggregate Statistics
-    summary = {
-        "hardware": "NVIDIA GB10 Blackwell SoC (Bare-Metal 121GB Unified)",
-        "num_trials": num_trials,
-        "tier1_atomic": {
-            "steps": 1,
-            "wall_latency_ms": {
-                "mean": float(np.mean(t1_wall_latencies)),
-                "p50": float(np.percentile(t1_wall_latencies, 50)),
-                "p95": float(np.percentile(t1_wall_latencies, 95)),
-            },
-            "engine_latency_ms": {
-                "mean": float(np.mean(t1_engine_latencies)),
-                "p50": float(np.percentile(t1_engine_latencies, 50)),
-                "p95": float(np.percentile(t1_engine_latencies, 95)),
-            },
-        },
-        "tier2_parametric_primitive": {
-            "steps": "2-4",
-            "wall_latency_ms": {
-                "mean": float(np.mean(t2_wall_latencies)),
-                "p50": float(np.percentile(t2_wall_latencies, 50)),
-                "p95": float(np.percentile(t2_wall_latencies, 95)),
-            },
-            "engine_latency_ms": {
-                "mean": float(np.mean(t2_engine_latencies)),
-                "p50": float(np.percentile(t2_engine_latencies, 50)),
-                "p95": float(np.percentile(t2_engine_latencies, 95)),
-            },
-            "argument_parse_accuracy_pct": float((t2_valid_parses / num_trials) * 100.0),
-        },
-        "tier3_generative_synthesis": {
-            "steps": "12-20",
-            "wall_latency_ms": {
-                "mean": float(np.mean(t3_wall_latencies)),
-                "p50": float(np.percentile(t3_wall_latencies, 50)),
-                "p95": float(np.percentile(t3_wall_latencies, 95)),
-            },
-            "engine_latency_ms": {
-                "mean": float(np.mean(t3_engine_latencies)),
-                "p50": float(np.percentile(t3_engine_latencies, 50)),
-                "p95": float(np.percentile(t3_engine_latencies, 95)),
-            },
-        },
-        "comparisons": {
-            "tier1_speedup_vs_tier3": float(np.mean(t3_wall_latencies) / np.mean(t1_wall_latencies)),
-            "tier2_speedup_vs_tier3": float(np.mean(t3_wall_latencies) / np.mean(t2_wall_latencies)),
-        },
-    }
-
-    out_path = os.path.join(os.path.dirname(__file__), "tiered_latency_results.json")
-    with open(out_path, "w") as f:
-        json.dump(summary, f, indent=2)
-
-    print("\n" + "=" * 80)
-    print("BENCHMARK COMPLETE")
-    print("=" * 80)
-    print(f"Tier 1 (Atomic, 1 Step):        Mean = {summary['tier1_atomic']['wall_latency_ms']['mean']:.2f} ms | p50 = {summary['tier1_atomic']['wall_latency_ms']['p50']:.2f} ms")
-    print(f"Tier 2 (Primitive, 2-4 Steps):  Mean = {summary['tier2_parametric_primitive']['wall_latency_ms']['mean']:.2f} ms | p50 = {summary['tier2_parametric_primitive']['wall_latency_ms']['p50']:.2f} ms (Parse Acc: {summary['tier2_parametric_primitive']['argument_parse_accuracy_pct']:.1f}%)")
-    print(f"Tier 3 (Generative, 16-20 Steps):Mean = {summary['tier3_generative_synthesis']['wall_latency_ms']['mean']:.2f} ms | p50 = {summary['tier3_generative_synthesis']['wall_latency_ms']['p50']:.2f} ms")
-    print("-" * 80)
-    print(f"Speedup Tier 2 vs Full Generation: {summary['comparisons']['tier2_speedup_vs_tier3']:.2f}x faster compute allocation!")
-    print(f"Results saved to: {out_path}")
-    print("=" * 80)
+    summary_path = Path(__file__).with_name(f"tiered_latency_summary_{run_id}.json")
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(f"Traces: {trace_path}\nSummary: {summary_path}")
+    return summary
 
 
 if __name__ == "__main__":
-    run_tiered_benchmark(num_trials=10)
-
+    run_tiered_benchmark(num_trials=int(os.environ.get("REFLEX_BENCH_TRIALS", "10")))

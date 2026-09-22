@@ -1,5 +1,8 @@
 # Reflex: A Unified Decision-and-Generation Runtime for Diffusion Language Models
 
+> **Historical proposal, not an implementation report (2026-09-22).** This document records design hypotheses. The repository currently uses a Transformers/PyTorch server, not the proposed vLLM patches; it does not implement newly trained dedicated control tokens, mixed frozen fields, GPU-millisecond compute regularization, or OSWorld/Mind2Web evaluation. Its old accuracy and safety targets have not been established. See README.md, RESULTS.md, and NOTES.md for implemented behavior and measured evidence.
+
+
 **Document Type:** Systems & Research Proposal
 
 **Target Tracks:** MLSys / ICLR / NeurIPS (Systems & Architectures)

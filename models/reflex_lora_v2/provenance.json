@@ -1,0 +1,29 @@
+{
+  "base_model": "/home/tawana/.cache/huggingface/hub/models--google--diffusiongemma-26B-A4B-it/snapshots/f7f5b7f5fa82ffc52addd066915886d497f5517b",
+  "git_commit_at_manifest": "3d4c8b26bdd76400bfc8f09df11656cc28bdf459",
+  "working_tree_modified": true,
+  "training_script": "experiments/train_reflex_lora.py",
+  "training_steps": 200,
+  "seed": 42,
+  "packages": {
+    "torch": "2.14.0+cu130",
+    "transformers": "5.17.0",
+    "peft": "0.21.0",
+    "datasets": "5.0.1",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1"
+  },
+  "sha256": {
+    "data/boolq/train.jsonl": "fcd3480b8c2f81c2332aa6bb8ee1626d99f885f0f7fbaf1ae6db22e99f8ba8ac",
+    "data/boolq/cal.jsonl": "ef54922c7fe51310e6eaca2eedcf53f45a4da29fb2b18a1e218195b1a0626c03",
+    "data/boolq/test.jsonl": "7fc6f381b8803970b74a4303e27bf6d3c5de8d235dbabe781c36160d7839d3df",
+    "data/banking77/train.jsonl": "b4df5630545a4d89eada52d8ca12b8931e7438a46e4a9f5aeb696f10e085b7df",
+    "data/banking77/cal.jsonl": "4604fa4c636d5bfa4956df0720bba2cd39eaedf6a7806d3d72e7636fad36a238",
+    "data/banking77/test.jsonl": "81a235fe6a223c85c0906dcff6067470dc9750779f2a84318e2248e73a6285fd",
+    "data/bfcl/train.jsonl": "df55cb4a5d808b681873bf8edc07058827e059c52e4406a117738b74004cc6f8",
+    "data/bfcl/cal.jsonl": "4679467f1dd19a229cfb6e6ea84b75c053cb04949d7cb1e8a2b49d7eb9efd048",
+    "data/bfcl/test.jsonl": "5cd30d7d2adba4813b642c1882e9a73c7e723c9ecf90cb2d2c28bb335e2efe8b",
+    "data/supervision_provenance.json": "c060fbd60d11060e8201ad53f48692de7ae5eca11f0867600539aaacee59c227",
+    "models/reflex_lora_v2/adapter_model.safetensors": "ab96f9f0c11ed105e2c285c21d695ac015f5d0c2d544606176ba00a666725186"
+  }
+}

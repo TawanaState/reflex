@@ -12,10 +12,12 @@ import os
 import sys
 import json
 import random
+import hashlib
 import urllib.request
 from typing import Dict, List, Any
 import numpy as np
 from datasets import load_dataset
+from transformers import AutoTokenizer
 
 # Set deterministic seed
 SEED = 42
@@ -23,6 +25,8 @@ random.seed(SEED)
 np.random.seed(SEED)
 
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+BFCL_SOURCE_REV = "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8"
+BFCL_BASE_URL = f"https://raw.githubusercontent.com/ShishirPatil/gorilla/{BFCL_SOURCE_REV}/berkeley-function-call-leaderboard/bfcl_eval/data"
 
 
 def save_jsonl(records: List[Dict[str, Any]], filepath: str):
@@ -112,9 +116,14 @@ def prepare_banking77():
 def prepare_boolq():
     """
     Downloads and prepares Google BoolQ dataset (Boolean factual question answering).
-    Candidate token IDs: 'yes' (9484) and 'no' (2374).
+    Candidate token IDs are derived from the pinned tokenizer at preparation time.
     """
     print("\n[2/3] Preparing Google BoolQ Dataset...")
+    tokenizer = AutoTokenizer.from_pretrained(os.environ.get("DIFFUSION_GEMMA_PATH", "google/diffusiongemma-26B-A4B-it"))
+    yes_ids = tokenizer.encode("yes", add_special_tokens=False)
+    no_ids = tokenizer.encode("no", add_special_tokens=False)
+    if len(yes_ids) != 1 or len(no_ids) != 1 or yes_ids == no_ids:
+        raise ValueError("BoolQ verbalizers must be distinct single tokenizer tokens")
     ds_train = load_dataset("google/boolq", split="train")
     ds_val = load_dataset("google/boolq", split="validation")
 
@@ -137,8 +146,7 @@ def prepare_boolq():
         gt_bool = item["answer"]
         gt_label = "yes" if gt_bool else "no"
         prompt = f"Passage: {passage}\nQuestion: {question}?\nAnswer (yes or no):"
-        # In DiffusionGemma: 'yes' -> 9484, 'no' -> 2374
-        target_token_id = 9484 if gt_bool else 2374
+        target_token_id = yes_ids[0] if gt_bool else no_ids[0]
         return {
             "prompt": prompt,
             "passage": passage,
@@ -148,7 +156,7 @@ def prepare_boolq():
             "ground_truth_label": gt_label,
             "ground_truth_index": 1 if gt_bool else 0,
             "target_token_id": target_token_id,
-            "candidate_token_ids": [2374, 9484],  # [no, yes]
+            "candidate_token_ids": [no_ids[0], yes_ids[0]],  # [no, yes]
             "candidate_labels": ["no", "yes"],
         }
 
@@ -165,7 +173,10 @@ def prepare_bfcl():
     Evaluates discrete tool selection across candidate functions.
     """
     print("\n[3/3] Preparing BFCL Routing Dataset...")
-    bfcl_url = "https://raw.githubusercontent.com/ShishirPatil/gorilla/main/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json"
+    bfcl_url = f"{BFCL_BASE_URL}/BFCL_v4_multiple.json"
+    answer_url = f"{BFCL_BASE_URL}/possible_answer/BFCL_v4_multiple.json"
+    with urllib.request.urlopen(urllib.request.Request(answer_url, headers={"User-Agent": "Reflex-Data-Prep"}), timeout=30) as resp:
+        answer_by_id = {entry["id"]: entry["ground_truth"] for entry in map(json.loads, resp)}
     
     req = urllib.request.Request(bfcl_url, headers={"User-Agent": "Reflex-Data-Prep"})
     raw_lines = []
@@ -195,12 +206,17 @@ def prepare_bfcl():
         func_names = [f["name"] for f in functions]
         func_descs = [f"{f['name']}: {f.get('description', '')}" for f in functions]
 
-        # Determine ground truth function from prompt or ID if available
-        # In BFCL multiple, the query typically targets the primary matching function
-        # We index candidates: Candidate 0, 1, ...
-        # For evaluation, candidate token IDs: <unused0>..<unusedK-1> (IDs 6..6+K-1)
+        # Use the official BFCL answer file. This subset is single-call routing only.
+        gold_calls = answer_by_id.get(cid, [])
+        if len(gold_calls) != 1 or len(gold_calls[0]) != 1:
+            continue
+        gold_name = next(iter(gold_calls[0]))
+        # Candidate token IDs: <unused0>..<unusedK-1> (IDs 6..6+K-1)
         k = min(len(func_names), 10)  # Up to 10 candidates
         cand_names = func_names[:k]
+        if gold_name not in cand_names:
+            continue
+        gold_index = cand_names.index(gold_name)
         cand_token_ids = [6 + idx for idx in range(k)]
 
         # Candidate function list formatted into prompt
@@ -220,9 +236,9 @@ def prepare_bfcl():
             "candidate_names": cand_names,
             "candidate_token_ids": cand_token_ids,
             "candidate_labels": [str(i) for i in range(k)],
-            "ground_truth_index": 0,  # Benchmark convention: primary target
-            "ground_truth_label": cand_names[0],
-            "target_token_id": cand_token_ids[0],
+            "ground_truth_index": gold_index,
+            "ground_truth_label": gold_name,
+            "target_token_id": cand_token_ids[gold_index],
         })
 
     random.shuffle(formatted_records)
@@ -292,8 +308,64 @@ def verify_splits():
         sys.exit(1)
 
 
+
+def repair_existing_supervision():
+    """Correct committed labels without changing example IDs or split membership."""
+    tokenizer_path = os.environ.get("DIFFUSION_GEMMA_PATH", "google/diffusiongemma-26B-A4B-it")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    no_ids = tokenizer.encode("no", add_special_tokens=False)
+    yes_ids = tokenizer.encode("yes", add_special_tokens=False)
+    if len(no_ids) != 1 or len(yes_ids) != 1 or no_ids == yes_ids:
+        raise ValueError("BoolQ verbalizers must be distinct single tokens")
+    answer_url = f"{BFCL_BASE_URL}/possible_answer/BFCL_v4_multiple.json"
+    with urllib.request.urlopen(urllib.request.Request(answer_url, headers={"User-Agent": "Reflex-Data-Prep"}), timeout=30) as resp:
+        answer_bytes = resp.read()
+    answers = {entry["id"]: entry["ground_truth"] for entry in map(json.loads, answer_bytes.splitlines())}
+    counts = {}
+    for name in ("boolq", "bfcl"):
+        changed = 0
+        for split in ("train", "cal", "test"):
+            path = os.path.join(DATA_DIR, name, f"{split}.jsonl")
+            with open(path, encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+            for row in rows:
+                if name == "boolq":
+                    gold_index = 1 if row["ground_truth_label"] == "yes" else 0
+                    if row["ground_truth_label"] not in ("yes", "no"):
+                        raise ValueError(f"Unexpected BoolQ label in {path}")
+                    row["candidate_token_ids"] = [no_ids[0], yes_ids[0]]
+                else:
+                    gold_calls = answers.get(row["id"])
+                    if gold_calls is None or len(gold_calls) != 1 or len(gold_calls[0]) != 1:
+                        raise ValueError(f"No unique official BFCL answer for {row['id']}")
+                    gold_name = next(iter(gold_calls[0]))
+                    if gold_name not in row["candidate_names"]:
+                        raise ValueError(f"BFCL gold name missing from candidates for {row['id']}")
+                    gold_index = row["candidate_names"].index(gold_name)
+                    row["ground_truth_label"] = gold_name
+                if row["ground_truth_index"] != gold_index or row["target_token_id"] != row["candidate_token_ids"][gold_index]:
+                    changed += 1
+                row["ground_truth_index"] = gold_index
+                row["target_token_id"] = row["candidate_token_ids"][gold_index]
+            save_jsonl(rows, path)
+        counts[name] = changed
+    provenance = {
+        "bfcl_answer_url": answer_url,
+        "bfcl_answer_sha256": hashlib.sha256(answer_bytes).hexdigest(),
+        "tokenizer_path": tokenizer_path,
+        "boolq_candidate_token_ids_no_yes": [no_ids[0], yes_ids[0]],
+        "changed_label_rows": counts,
+    }
+    with open(os.path.join(DATA_DIR, "supervision_provenance.json"), "w", encoding="utf-8") as f:
+        json.dump(provenance, f, indent=2)
+    print(f"Corrected supervision: {counts}")
+    verify_splits()
+
+
 if __name__ == "__main__":
-    if "--verify-splits" in sys.argv:
+    if "--repair-existing-supervision" in sys.argv:
+        repair_existing_supervision()
+    elif "--verify-splits" in sys.argv:
         verify_splits()
     else:
         prepare_banking77()

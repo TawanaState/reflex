@@ -1,0 +1,13 @@
+{
+  "bfcl_answer_url": "https://raw.githubusercontent.com/ShishirPatil/gorilla/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json",
+  "bfcl_answer_sha256": "244e00ce9395df948bcafc7bee64e8f9c87ef70887587d83cae45b13699f3047",
+  "tokenizer_path": "google/diffusiongemma-26B-A4B-it",
+  "boolq_candidate_token_ids_no_yes": [
+    1904,
+    4443
+  ],
+  "changed_label_rows": {
+    "boolq": 9270,
+    "bfcl": 127
+  }
+}

@@ -2,7 +2,7 @@
 Dynamic Step Scheduler for Project Reflex.
 Allocates diffusion denoising steps and canvas footprint dynamically based on schema complexity:
   - Tier 1 (Atomic): 1 step, L <= 8
-  - Tier 2 (Parametric Primitive): 2-4 steps, L in [8, 24] with convergence early-stopping
+  - Tier 2 (Parametric Primitive): legacy planned low-step canvas; current runner uses explicit-number extraction
   - Tier 3 (Generative Synthesis): 12-20 steps, L in [64, 256]
 """
 

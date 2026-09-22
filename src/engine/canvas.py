@@ -3,6 +3,7 @@ Canvas memory allocation, template seeding, and token decoding for Project Refle
 """
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -116,9 +117,10 @@ def parse_and_validate_primitives(
                 if k in data:
                     val = data[k]
                     val = cast_primitive_value(val, pspec)
-                    if val is not None:
-                        validated[k] = val
-            if len(validated) > 0:
+                    if val is None:
+                        return {}
+                    validated[k] = val
+            if all(k in validated for k in complexity.required_parameters):
                 return validated
     except Exception:
         pass
@@ -134,53 +136,74 @@ def parse_and_validate_primitives(
             val = cast_primitive_value(raw_val, pspec)
             if val is not None:
                 validated[k] = val
-        else:
-            # Fallback for standalone integer or float in text
-            if pspec.type in ("integer", "int"):
-                num_match = re.search(r'\b\d+\b', text_clean)
-                if num_match:
-                    try:
-                        validated[k] = int(num_match.group(0))
-                    except ValueError:
-                        pass
-            elif pspec.type in ("number", "float"):
-                num_match = re.search(r'\b\d+(\.\d+)?\b', text_clean)
-                if num_match:
-                    try:
-                        validated[k] = float(num_match.group(0))
-                    except ValueError:
-                        pass
 
+    if any(k not in validated for k in complexity.required_parameters):
+        return {}
     return validated
 
 
-def cast_primitive_value(raw_val: Any, pspec: ParameterSpec) -> Optional[Any]:
-    """Casts raw extracted token value into specified primitive type."""
-    try:
-        t = pspec.type
-        if t in ("integer", "int"):
-            if isinstance(raw_val, (int, float)):
-                return int(raw_val)
-            cleaned = re.sub(r'[^\d\-]', '', str(raw_val))
-            return int(cleaned) if cleaned else None
-        elif t in ("number", "float"):
-            if isinstance(raw_val, (int, float)):
-                return float(raw_val)
-            cleaned = re.sub(r'[^\d\.\-]', '', str(raw_val))
-            return float(cleaned) if cleaned else None
-        elif t in ("boolean", "bool"):
-            if isinstance(raw_val, bool):
-                return raw_val
-            s = str(raw_val).lower().strip()
-            return s in ("true", "1", "yes")
-        elif pspec.enum_values:
-            val_str = str(raw_val).strip()
-            for enum_opt in pspec.enum_values:
-                if str(enum_opt).lower() == val_str.lower():
-                    return enum_opt
-            return pspec.enum_values[0]
-        else:
-            return str(raw_val).strip()
-    except Exception:
+
+def extract_unambiguous_numeric_argument(user_text: str, complexity: ToolComplexity) -> Optional[Dict[str, Any]]:
+    """Extract one explicit number for a one-number required schema; otherwise abstain.
+
+    This is a transparent deterministic fallback, not model-generated argument synthesis.
+    It deliberately rejects prompts containing multiple numeric literals.
+    """
+    if len(complexity.parameters) != 1 or len(complexity.required_parameters) != 1:
         return None
+    name = complexity.required_parameters[0]
+    spec = complexity.parameters.get(name)
+    if spec is None or spec.type not in ("integer", "int", "number", "float"):
+        return None
+    numerals = re.findall(r"(?<![\w.])[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?![\w.])", user_text)
+    if len(numerals) != 1:
+        return None
+    value = cast_primitive_value(numerals[0], spec)
+    return {name: value} if value is not None else None
+
+
+def cast_primitive_value(raw_val: Any, pspec: ParameterSpec) -> Optional[Any]:
+    """Cast a primitive only when its complete value satisfies the schema."""
+    if pspec.enum_values is not None:
+        return next((v for v in pspec.enum_values if str(raw_val).casefold() == str(v).casefold()), None)
+    kind = pspec.type
+    if kind in ("integer", "int"):
+        if isinstance(raw_val, bool):
+            return None
+        if isinstance(raw_val, int):
+            value = raw_val
+        elif isinstance(raw_val, str) and re.fullmatch(r"[+-]?\d+", raw_val.strip()):
+            value = int(raw_val.strip())
+        else:
+            return None
+    elif kind in ("number", "float"):
+        if isinstance(raw_val, bool):
+            return None
+        if isinstance(raw_val, (int, float)):
+            value = float(raw_val)
+        elif isinstance(raw_val, str) and re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", raw_val.strip()):
+            value = float(raw_val.strip())
+        else:
+            return None
+    elif kind in ("boolean", "bool"):
+        if isinstance(raw_val, bool):
+            value = raw_val
+        elif str(raw_val).casefold().strip() in ("true", "1", "yes"):
+            value = True
+        elif str(raw_val).casefold().strip() in ("false", "0", "no"):
+            value = False
+        else:
+            return None
+    elif kind == "string" and isinstance(raw_val, str):
+        value = raw_val
+    else:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(value):
+            return None
+        if pspec.minimum is not None and value < pspec.minimum:
+            return None
+        if pspec.maximum is not None and value > pspec.maximum:
+            return None
+    return value
 

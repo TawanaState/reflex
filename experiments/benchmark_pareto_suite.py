@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""
-Project Reflex: Phase F Comprehensive End-to-End Pareto Benchmarking Suite
-Compares four real systems paradigms on the exact same physical NVIDIA GB10 hardware:
-  1. Autoregressive LLM (gemma4:12b-it-qat via Ollama engine)
-  2. Standard Fixed 20-Step Diffusion (monolithic 256-token canvas)
-  3. Two-Model Cascade (Fast classifier router + AR LLM escalation)
-  4. Reflex (Calibrated Micro-Control Canvas + Conformal Risk Gate + Zero-Penalty Expansion)
+"""Archived v1 Pareto experiment; retained for audit only.
 
-Evaluates on held-out test splits from Google BoolQ and Banking77.
-Generates comprehensive JSON artifacts and 4-panel publication Pareto figures.
+This source inserts unmeasured accuracy and cascade points and must not generate
+new empirical artifacts. Use the correctness-aware v2 trace scripts instead.
 """
 
 import os
@@ -454,6 +448,10 @@ def generate_pareto_visualizations(ar_data: dict, diff_data: dict, reflex_data: 
 
 
 def main():
+    raise RuntimeError(
+        "Retired: this v1 script inserts unmeasured Pareto points and cannot produce empirical results. "
+        "Use benchmark_routing_v2.py and benchmark_tiered_latency.py."
+    )
     print("==========================================================================")
     print("PROJECT REFLEX: PHASE F FULL AUDITABLE PARETO BENCHMARK SUITE")
     print("==========================================================================")
@@ -473,18 +471,8 @@ def main():
     # Step 1: Benchmark Autoregressive LLM (via local Ollama engine)
     ar_results = benchmark_ar_llm(test_suite)
 
-    # Step 2: Stop Ollama to dedicate 100% GPU memory to DiffusionGemma
-    print("\nStopping Ollama service to free full GPU memory for DiffusionGemma...")
-    os.system("echo 25aa9c91c | sudo -S systemctl stop ollama")
-    time.sleep(2)
-
-    # Step 3: Benchmark Diffusion & Reflex on physical GPU
-    try:
-        diff_reflex_results = benchmark_diffusion_and_reflex(cal_suite, test_suite)
-    finally:
-        # Step 4: Always bring Ollama back up as requested by user!
-        print("\nRestoring Ollama service...")
-        os.system("echo 25aa9c91c | sudo -S systemctl start ollama")
+    # Archived body retained for audit; main() exits before this point.
+    diff_reflex_results = benchmark_diffusion_and_reflex(cal_suite, test_suite)
 
     fixed_diff_data = diff_reflex_results["fixed_diffusion"]
     reflex_data = diff_reflex_results["reflex"]

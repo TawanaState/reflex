@@ -1,9 +1,9 @@
 """
 Schema Complexity Classifier for Project Reflex.
 Inspects OpenAI function schemas and classifies tool calls into compute tiers:
-  - Tier 1 (ATOMIC): 0 required arguments -> 1 forward pass (~110ms)
-  - Tier 2 (PARAMETRIC_PRIMITIVE): Ints, Floats, Enums, Booleans -> 2-4 steps (~130-160ms)
-  - Tier 3 (GENERATIVE_SYNTHESIS): Unbounded strings / free-form code -> 12-20 steps (~350-500ms)
+  - Tier 1 (ATOMIC): no declared arguments
+  - Tier 2 (PARAMETRIC_PRIMITIVE): primitive declared arguments
+  - Tier 3 (GENERATIVE_SYNTHESIS): unbounded strings or structures
 """
 
 from dataclasses import dataclass, field
@@ -27,6 +27,8 @@ class ParameterSpec:
     enum_values: Optional[List[Any]] = None
     default_value: Optional[Any] = None
     estimated_tokens: int = 4
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
 
     @property
     def is_primitive(self) -> bool:
@@ -78,8 +80,8 @@ def inspect_tool_schema(tool_def: Dict[str, Any]) -> ToolComplexity:
     if not isinstance(required_list, list):
         required_list = []
 
-    # 1. Tier 1: Atomic Action (0 parameters or 0 required properties)
-    if len(props) == 0 or len(required_list) == 0:
+    # Optional properties still require an argument-capable tier.
+    if len(props) == 0:
         return ToolComplexity(
             tool_name=name,
             tier=Tier.ATOMIC,
@@ -100,7 +102,7 @@ def inspect_tool_schema(tool_def: Dict[str, Any]) -> ToolComplexity:
         if not isinstance(prop_spec, dict):
             prop_spec = {"type": "string"}
 
-        raw_type = prop_spec.get("type", "string").lower()
+        raw_type = str(prop_spec.get("type", "string")).lower()
         prop_desc = prop_spec.get("description", "")
         enum_vals = prop_spec.get("enum")
         is_req = prop_name in required_list
@@ -117,8 +119,7 @@ def inspect_tool_schema(tool_def: Dict[str, Any]) -> ToolComplexity:
         else:
             # Unbounded string or structured object
             est_tokens = 32
-            if is_req:
-                has_generative_string = True
+            has_generative_string = True
 
         parsed_params[prop_name] = ParameterSpec(
             name=prop_name,
@@ -128,6 +129,8 @@ def inspect_tool_schema(tool_def: Dict[str, Any]) -> ToolComplexity:
             enum_values=enum_vals,
             default_value=prop_spec.get("default"),
             estimated_tokens=est_tokens,
+            minimum=prop_spec.get("minimum"),
+            maximum=prop_spec.get("maximum"),
         )
         total_estimated_tokens += (est_tokens + len(prop_name) // 3 + 2)
 

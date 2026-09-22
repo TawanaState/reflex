@@ -1,0 +1,217 @@
+{
+  "total_steps": 200,
+  "training_time_seconds": 435.02244234085083,
+  "final_training_window_accuracy": 77.5,
+  "final_training_window_brier_score": 0.23466340018004442,
+  "final_validation_accuracy": 61.111111111111114,
+  "validation_history": [
+    {
+      "step": 50,
+      "accuracy": 52.22222222222223,
+      "brier_score": 0.5662795343357073,
+      "samples": 90
+    },
+    {
+      "step": 100,
+      "accuracy": 63.33333333333333,
+      "brier_score": 0.4106427400271514,
+      "samples": 90
+    },
+    {
+      "step": 150,
+      "accuracy": 61.111111111111114,
+      "brier_score": 0.432554541116085,
+      "samples": 90
+    },
+    {
+      "step": 200,
+      "accuracy": 61.111111111111114,
+      "brier_score": 0.4298136590796307,
+      "samples": 90
+    }
+  ],
+  "base_model": "/home/tawana/.cache/huggingface/hub/models--google--diffusiongemma-26B-A4B-it/snapshots/f7f5b7f5fa82ffc52addd066915886d497f5517b",
+  "seed": 42,
+  "history": [
+    {
+      "step": 10,
+      "loss": 5.151142641622573,
+      "loss_control": 4.927128661074676,
+      "loss_brier": 0.2240140223637354,
+      "step1_accuracy": 40.0,
+      "brier_score": 0.9502793485578878,
+      "learning_rate": 0.0001
+    },
+    {
+      "step": 20,
+      "loss": 2.730175543477526,
+      "loss_control": 2.53795797729108,
+      "loss_brier": 0.19221756282637728,
+      "step1_accuracy": 37.5,
+      "brier_score": 0.7465126511902156,
+      "learning_rate": 0.0002
+    },
+    {
+      "step": 30,
+      "loss": 2.1889072195626795,
+      "loss_control": 2.0801110643194987,
+      "loss_brier": 0.1087961592082138,
+      "step1_accuracy": 42.5,
+      "brier_score": 0.6188870617792418,
+      "learning_rate": 0.00019848077530122083
+    },
+    {
+      "step": 40,
+      "loss": 2.493108065892011,
+      "loss_control": 2.390962563804351,
+      "loss_brier": 0.1021455032438098,
+      "step1_accuracy": 42.5,
+      "brier_score": 0.6409551790755359,
+      "learning_rate": 0.00019396926207859084
+    },
+    {
+      "step": 50,
+      "loss": 1.963718386850087,
+      "loss_control": 1.83313430135604,
+      "loss_brier": 0.13058407526323207,
+      "step1_accuracy": 60.0,
+      "brier_score": 0.5224009429262878,
+      "learning_rate": 0.00018660254037844388
+    },
+    {
+      "step": 60,
+      "loss": 2.415349587914534,
+      "loss_control": 2.2815855717053637,
+      "loss_brier": 0.13376401824243658,
+      "step1_accuracy": 40.0,
+      "brier_score": 0.650710508661723,
+      "learning_rate": 0.0001766044443118978
+    },
+    {
+      "step": 70,
+      "loss": 1.8451704850762325,
+      "loss_control": 1.7338135771824454,
+      "loss_brier": 0.11135691273097806,
+      "step1_accuracy": 60.0,
+      "brier_score": 0.5096978938966416,
+      "learning_rate": 0.00016427876096865394
+    },
+    {
+      "step": 80,
+      "loss": 1.8497709222661798,
+      "loss_control": 1.7649463957292029,
+      "loss_brier": 0.08482453800954773,
+      "step1_accuracy": 55.00000000000001,
+      "brier_score": 0.49166433497125583,
+      "learning_rate": 0.00015000000000000001
+    },
+    {
+      "step": 90,
+      "loss": 2.040089491181425,
+      "loss_control": 1.9649286957486765,
+      "loss_brier": 0.07516077929271318,
+      "step1_accuracy": 55.00000000000001,
+      "brier_score": 0.5119810567634773,
+      "learning_rate": 0.00013420201433256689
+    },
+    {
+      "step": 100,
+      "loss": 2.128376741471584,
+      "loss_control": 2.043599328235723,
+      "loss_brier": 0.08477739388308692,
+      "step1_accuracy": 52.5,
+      "brier_score": 0.5429681161181179,
+      "learning_rate": 0.00011736481776669306
+    },
+    {
+      "step": 110,
+      "loss": 1.5206222553622866,
+      "loss_control": 1.4544405489714336,
+      "loss_brier": 0.06618171661126268,
+      "step1_accuracy": 67.5,
+      "brier_score": 0.3853594134418188,
+      "learning_rate": 0.0001
+    },
+    {
+      "step": 120,
+      "loss": 1.250563954801828,
+      "loss_control": 1.2162734120239747,
+      "loss_brier": 0.03429055654516677,
+      "step1_accuracy": 75.0,
+      "brier_score": 0.2902795445744818,
+      "learning_rate": 8.263518223330697e-05
+    },
+    {
+      "step": 130,
+      "loss": 1.3986483927498292,
+      "loss_control": 1.3811568241340868,
+      "loss_brier": 0.017491570280436398,
+      "step1_accuracy": 70.0,
+      "brier_score": 0.30395824962557216,
+      "learning_rate": 6.579798566743314e-05
+    },
+    {
+      "step": 140,
+      "loss": 1.543609287631854,
+      "loss_control": 1.4943098118742308,
+      "loss_brier": 0.049299480008589344,
+      "step1_accuracy": 65.0,
+      "brier_score": 0.387064750223988,
+      "learning_rate": 5.000000000000002e-05
+    },
+    {
+      "step": 150,
+      "loss": 1.5243499067328,
+      "loss_control": 1.4930376533925103,
+      "loss_brier": 0.031312280844103105,
+      "step1_accuracy": 67.5,
+      "brier_score": 0.35413447375300205,
+      "learning_rate": 3.5721239031346066e-05
+    },
+    {
+      "step": 160,
+      "loss": 2.212864698756357,
+      "loss_control": 2.175817696221827,
+      "loss_brier": 0.03704699150833929,
+      "step1_accuracy": 52.5,
+      "brier_score": 0.5081155829469327,
+      "learning_rate": 2.339555568810221e-05
+    },
+    {
+      "step": 170,
+      "loss": 1.671073315385638,
+      "loss_control": 1.6363202700765214,
+      "loss_brier": 0.03475303290235924,
+      "step1_accuracy": 67.5,
+      "brier_score": 0.36103995634838687,
+      "learning_rate": 1.339745962155613e-05
+    },
+    {
+      "step": 180,
+      "loss": 2.0323972833101975,
+      "loss_control": 1.9914420806141948,
+      "loss_brier": 0.04095520409900001,
+      "step1_accuracy": 60.0,
+      "brier_score": 0.4447707729007943,
+      "learning_rate": 6.030737921409169e-06
+    },
+    {
+      "step": 190,
+      "loss": 1.9595786444494976,
+      "loss_control": 1.9240007227400853,
+      "loss_brier": 0.035577936892923864,
+      "step1_accuracy": 60.0,
+      "brier_score": 0.4357889047441489,
+      "learning_rate": 1.5192246987791981e-06
+    },
+    {
+      "step": 200,
+      "loss": 1.0918521569795048,
+      "loss_control": 1.0831859299369087,
+      "loss_brier": 0.0086662222109054,
+      "step1_accuracy": 77.5,
+      "brier_score": 0.23466340018004442,
+      "learning_rate": 0.0
+    }
+  ]
+}

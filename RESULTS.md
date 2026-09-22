@@ -1,141 +1,56 @@
-# Project Reflex: Quantitative Evaluation & Results Summary
+# Project Reflex: results and evidence status
 
-**Document Type:** Empirical Systems Evaluation & Hardware Benchmark Artifact  
-**Target Tracks:** MLSys / ICLR / NeurIPS (Systems & Architectures)  
-**Hardware Environment:** Bare-Metal NVIDIA DGX Spark Workstation (NVIDIA GB10 Blackwell Grace Architecture, 121 GiB Unified Memory, Driver 580.159.03, CUDA 13.0)  
-**Model Checkpoints:** 
-- Diffusion Backbone: `google/diffusiongemma-26B-A4B-it` (51.6 GB, bfloat16, 26B parameters, 3.8B active)
-- Fine-Tuned Adapter: `models/reflex_lora_v1/` (PEFT LoRA on decoder attention projections, 11.48M params / 0.0455%)
-- AR Baseline: `gemma4:12b-it-qat` (Ollama local inference engine)
-**Benchmark Datasets:** Google BoolQ, Banking77 (77-class intent), and BFCL v4 Routing (disjoint Train/Cal/Test 60/20/20 splits)
+**Updated 2026-09-22.** This document separates measured observations from claims that the current artifacts cannot support. The v1 adapter and historical JSON files remain available for audit. The corrected v2 adapter has completed training and local API probes; the measurements and their narrow scope are below.
 
----
+## What has been measured
 
-## 1. Executive Summary
+| Observation | Source | Interpretation |
+| --- | --- | --- |
+| DiffusionGemma and the v1 LoRA loaded on the local NVIDIA GB10 server | Live `/health` check and three local inference calls during the audit | Real model execution is operational. HTTP success does not establish correct tool choice. |
+| v1 Step-1 held-out correctness: **43/100** | `results/final_pareto_benchmark_results.json`, `reflex_proposed.results` | **43/75 BoolQ; 0/25 Banking77.** The 62.5% previously shown in this document was a training-window metric. |
+| AR reference correctness: **64/100** | Same artifact, `ar_baseline.results` | **63/75 BoolQ; 1/25 Banking77.** This is a different model, quantization, and inference stack; it is an engineering reference, not a matched baseline. |
+| v1 risk-policy calibration exits: **0/150**; test exits: **0/100** at all reported tolerances | Same artifact, `conformal_calibration` and `conformal_evaluation` | Selective error on exited cases is **undefined**, because there were no exits. The old file encodes it as 0%; that value must not be reported as successful safety evidence. |
+| Tier-2 old artifact: **20%** exact numeric argument accuracy; **367 ms** mean and **606 ms** p95 wall latency | `experiments/tiered_latency_results.json` | Historical output from a benchmark source that was syntactically broken at audit time. Reproducibility and route correctness were not established. It does not support a sub-180 ms accuracy claim. |
+| Prompt prefill **236.72 ms**, four-token decoder pass **76.76 ms**, 64-token decoder pass with reused prompt KV **123.86 ms** | `experiments/kv_retention_timing_results.json` and its script | Real GPU microbenchmark observations, pending independent rerun. They time components, not a complete generated response. |
+| Fixed 20-pass, 256-token diffusion latency **5293.53 ms** mean over five runs on one prompt | `results/final_pareto_benchmark_results.json` and `experiments/benchmark_pareto_suite.py` | A costly fixed operating point. Its reported 88% accuracy was inserted in code, not evaluated here. Its published p50/p95 were derived from the mean, not measured percentiles. |
 
-Autonomous agent runtimes for desktop, web, and tool execution require rapid, decisive action selection. Over 80% of agent steps are discrete routing decisions (*click*, *focus*, *select tool*), yet existing production systems force token-by-token autoregressive generation of structured JSON (850–1,200 ms) with non-zero syntax failure risks.
+The live server selected `mute_audio {}` for both “Set volume to 57” and “Write an email to Alice apologizing for the delay.” Those are concrete wrong-tool failures with the v1 adapter, regardless of syntactic validity. The current 18 discoverable unit tests cover small code paths; they do not test held-out model quality.
 
-**Project Reflex** proves a new runtime paradigm: **Control-First Canvas Expansion** on Discrete Diffusion Language Models.
-> **A discrete diffusion language model (DiffusionGemma 26B/A4B) evaluates a minimal typed control canvas (4–16 tokens) in a single denoise step (76.76 ms KV-cached, 279.83 ms full prefill) with mathematically calibrated conformal risk guarantees, conditionally expanding to open generation only when synthesis or escalation is strictly required—reusing prompt KV tensors in-memory with 0 ms prompt re-computation penalty.**
+## Why the previous Pareto chart is not empirical evidence
 
-Every metric reported reflects **genuine hardware execution on the physical NVIDIA GB10 Blackwell SoC**. Zero values are mocked or simulated.
+The old `experiments/benchmark_pareto_suite.py` inserts fixed diffusion accuracy, a two-model cascade point, and an expanded-path accuracy. Its expanded latency adds one 64-token decoder pass to prefill and Step 1; it does not execute a complete 12–20-step generation. `experiments/generate_real_pareto_analysis.py` also samples latency values. Figures derived from these sources are **illustrative historical artifacts**. They should not appear in a paper as a measured accuracy/latency frontier.
 
----
+The 76–83 ms cached micro-canvas timing is a **decoder-only** measurement after prompt prefill. It cannot be compared directly with end-to-end AR latency. A quality-matched end-to-end speedup has not yet been established. The runtime's repeated whole-canvas argmax is also different from the official DiffusionGemma sampling algorithm, so generative quality requires separate validation.
 
-## 2. Hardware Testbed & Execution Environment
+## Supervision correction and version boundary
 
-* **Platform:** NVIDIA DGX Spark Workstation
-* **SoC / CPU:** NVIDIA GB10 (20-core ARM64 Grace Architecture)
-* **GPU:** NVIDIA Blackwell Tensor Core GPU (Compute Capability 10.x, NVFP4 / FP8 / BF16 support)
-* **Unified Memory:** 121 GiB LPDDR5X / HBM Unified Memory Architecture (116 GiB available, rock-solid 48.34 GB allocation during training and inference)
-* **Software Toolchain:** Ubuntu 24.04 LTS, Linux 6.17.0, NVIDIA Driver 580.159.03, CUDA 13.0, PyTorch 2.14.0+cu130, Transformers 5.17.0, PEFT 0.21.0, Triton 3.8.0
+The original BoolQ data used candidate IDs 2374 and 9484, which decode to unrelated tokens in the installed tokenizer. Correct `no` and `yes` IDs are 1904 and 4443. The original BFCL records assigned every target to option zero; the pinned official answer file places 127 of 200 targets at other positions. `scripts/prepare_datasets.py --repair-existing-supervision` corrected the committed records without changing split membership. `data/supervision_provenance.json` records the source answer URL and hash. **The v1 adapter and all v1 result artifacts predate this correction and are not corrected by editing the data files.**
 
----
+## Corrected v2: measured local API results
 
-## 3. End-to-End Comparative Evaluation
+The v2 LoRA was trained on repaired BoolQ and BFCL labels with chat-wrapped prompts. Its final 90-example mixed-task **calibration/validation** check was 61.11% Step-1 accuracy (not held-out test accuracy). The adapter and provenance manifest are in `models/reflex_lora_v2/`.
 
-### Table 1: End-to-End Performance Across Paradigms on NVIDIA GB10
+| API probe | Exact calls | Mean wall latency | Evidence and limit |
+| --- | ---: | ---: | --- |
+| Local BFCL single-tool routing, original order | **40/40** | See per-item trace | `experiments/bfcl_routing_v2_20260922T084010Z.jsonl`; all used the one-step atomic path. This measures tool name only, not official BFCL argument scoring. |
+| Same 40 queries, deterministically permuted menu | **40/40** | See per-item trace | Same trace; each tool's index changed according to a fixed per-item shuffle. |
+| Atomic `mute_audio`, five trials | **5/5** | **281.1 ms** | `experiments/tiered_latency_summary_20260922T082929Z.json`; one prompt repeated five times. |
+| Explicit numeric `set_volume(level=57)`, five trials | **5/5** | **285.2 ms** | Same summary. A deterministic single-number extractor supplies the value after learned tool selection; this is **not learned argument synthesis**. |
+| Free-text email call, five trials | **0/5** | **2625.7 ms** | Same summary. Required fields were not generated and the server returned no executable tool call. |
 
-| Metric | Autoregressive LLM (`gemma4:12b`) | Fixed 20-Step Diffusion (`DiffusionGemma-26B`, 256tok) | Two-Model Cascade (Classifier + AR) | Reflex Step-1 (KV-Cached Hit) | Reflex Fast-Path (Full Prefill + 1 Step) | Reflex Expanded Path (Prefill + Step1 + Exp64) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Model Footprint** | 12B Q4_0 | 26B BF16 | 0.5B + 12B | **26B BF16 + LoRA** | **26B BF16 + LoRA** | **26B BF16 + LoRA** |
-| **p50 Latency** | 856.1 ms | 5,293.5 ms | 528.0 ms | **76.8 ms** | **279.8 ms** | **403.7 ms** |
-| **p95 Latency** | 941.8 ms | 5,452.3 ms | 980.0 ms | **78.1 ms** | **315.0 ms** | **445.0 ms** |
-| **Mean Latency** | 951.3 ms | 5,293.5 ms | 575.7 ms | **82.6 ms** | **279.8 ms** | **403.7 ms** |
-| **Speedup vs AR** | 1.00x | 0.18x | 1.65x | **11.5x faster** | **3.4x faster** | **2.4x faster** |
-| **Speedup vs Fixed Diff** | 5.56x | 1.00x | 9.20x | **64.1x faster** | **18.9x faster** | **13.1x faster** |
-| **Syntactic Errors** | 0.0% (JSON mode) | **0.0%** | 0.0% | **0.0%** | **0.0%** | **0.0%** |
-| **Decision Accuracy** | 64.0% | 88.0% | 78.5% | 62.5% (Step-1) | 62.5% (Step-1) | **92.0% (Expanded)** |
-| **Conformal Selective Risk**| Uncalibrated | N/A | Heuristic | **0.0%** ($\le \epsilon$ bound) | **0.0%** ($\le \epsilon$ bound) | **0.0%** ($\le \epsilon$ bound) |
+The BFCL train and test IDs are disjoint, but two exact query strings recur across them with different candidate menus. Removing those two gives 38/38 correct in the original and permuted exploratory traces; this does not substitute for a newly frozen independent test set. The 40 examples are a local BFCL-derived single-call routing subset, not the official BFCL benchmark. The repeated three-case tier probe is a functionality smoke test, not a population estimate. Its first v2 run before the explicit-number repair had 0/5 exact numeric calls because the model emitted `level=1` for 57; that trace is preserved as `experiments/tiered_latency_traces_20260922T082436Z.jsonl`.
 
-*Evaluation sample: 100 physical test items (75 BoolQ + 25 Banking77) evaluated on bare-metal GPU.*
+The deployed exit threshold remains an **uncalibrated 0.90 heuristic**. High confidence in the local routing probe is not evidence of a distribution-free error guarantee, and no quality-matched end-to-end speedup against a matched baseline has been measured. The server's large-canvas output does not yet yield valid free-text tool arguments.
 
----
+## Reproducible next evaluation
 
-## 4. Key Systems Findings & Empirical Validations
+1. Preserve v1 weights and JSON as historical evidence. Record the v2 checkpoint, base model revision, package versions, and dataset hashes.
+2. Run `python -m unittest discover tests/` for code-level checks. Run GPU integration scripts separately; the unit command does not execute them.
+3. Repeat the routing probe on a newly frozen independent set without train/test query overlap, and add base-model and matched-baseline runs. The local 40-item probe above is a routing subset, **not** the official full BFCL score.
+4. Extend the tiered probe to varied prompts and schema types. The current numeric path handles one explicit number only; train and validate a genuine argument model before claiming learned Tier-2 synthesis. The free-text path needs a valid generation method and quality evaluation.
+5. Calibrate an exit policy on a disjoint set and report calibration size, exits/errors, an upper bound, independent test coverage/error, and the assumptions of the method. Report selective error as N/A at zero exits. The server currently uses an uncalibrated 0.90 heuristic and must not be described as offering a conformal guarantee.
+6. For a paper, add matched baselines, official DiffusionGemma sampling, full-path generation quality, repeated latency trials, uncertainty intervals, and ablations. Build figures only from per-item measured traces.
 
-### 4.1 In-Memory KV-Cache Retention & Seamless Expansion
-Reflex eliminates redundant prompt re-computation when escalating from Phase 1 (Micro-Control Canvas) to Phase 2 (Generative Canvas). Passing `input_ids=None` with cached `past_key_values` allows the model's bidirectional decoder to operate directly over new generative token slots.
+## Current conclusion
 
-Empirical measurements on NVIDIA GB10 (190 context tokens, averaged over 15 timed trials with `torch.cuda.Event`):
-* **Prompt Encoding Latency ($T_{\text{prefill}}$):** 236.72 ms
-* **Phase 1 Micro-Canvas Pass ($T_{\text{step1}}$, $L=4$):** 76.76 ms
-* **Phase 2 Expansion Step ($T_{\text{gen}}$, $L=64$, KV-Reused):** 123.86 ms
-* **Naive Expansion Step ($L=64$, Redundant Re-encode):** 358.43 ms
-* **Redundant Prompt Compute Avoided:** **234.57 ms** (matches $T_{\text{prefill}}$ within 0.9%)
-* **Expansion Single-Step Speedup:** **2.89x faster** exclusively due to in-memory KV retention.
-
-Total expanded request latency strictly obeys:
-$$\text{Latency}_{\text{total}} = T_{\text{prefill}} + T_{\text{step1}} + T_{\text{gen\_expansion}} = 236.72 + 76.76 + 123.86 = 437.34\text{ ms}$$
-versus 671.91 ms for naive architectures (a **35.0% reduction in total escalation latency**).
-
----
-
-### 4.2 Multi-Task Calibrated Fine-Tuning (SFT / LoRA)
-Zero-shot discrete diffusion decoders exhibit high calibration error across fine-grained routing schemas. Reflex fine-tunes low-rank adapters ($r=16, \alpha=32$) on decoder attention projections (`q_proj`, `v_proj`, `k_proj`, `o_proj`, 11.48M parameters / 0.0455% of total weights) with a composite multi-task objective:
-
-$$\mathcal{L}_{\text{Reflex}} = \mathcal{L}_{\text{control}} + 0.5 \mathcal{L}_{\text{diffusion}} + 1.0 \mathcal{L}_{\text{Brier}}$$
-
-where $\mathcal{L}_{\text{Brier}} = \frac{1}{|\mathcal{K}|} \sum_{k \in \mathcal{K}} (p_k - y_k)^2$ quadratically penalizes overconfident errors.
-
-**Training Progression (200 steps on NVIDIA GB10 in 6.37 minutes):**
-* **Initial Step 10:** Loss = 8.9379, Brier Score = 0.8874, Accuracy = 40.0%
-* **Step 50:** Loss = 3.8280, Brier Score = 0.8670, Accuracy = 37.5%
-* **Step 100:** Loss = 2.3688, Brier Score = 0.5774, Accuracy = 52.5%
-* **Step 150:** Loss = 1.7269, Brier Score = 0.4958, Accuracy = 57.5%
-* **Final Step 200:** Loss = **1.2996**, Brier Score = **0.4150** (**53.2% calibration improvement**), Accuracy = **62.5%**
-* **Peak VRAM:** 48.34 GB (zero memory leaks).
-
----
-
-### 4.3 Conformal Risk Gate: Mathematical Safety Under Uncertainty
-Reflex replaces heuristic confidence thresholds with split-conformal risk control (Angelopoulos et al.):
-
-$$\lambda^* = \sup \left\{ \lambda \in [0, 1] : \widehat{R}_{\text{UCB}}(\lambda) \le \epsilon \right\}$$
-
-We implemented the **Empirical Bernstein Bound**:
-$$\widehat{R}_{\text{UCB}}(\lambda) = \widehat{R}(\lambda) + \sqrt{\frac{2 \widehat{V}(\lambda) \ln(2/\delta)}{N_{\text{exit}}(\lambda)}} + \frac{7 \ln(2/\delta)}{3(N_{\text{exit}}(\lambda) - 1)}$$
-
-**Empirical Calibration on 150 Held-Out Samples:**
-* For $\epsilon \in \{0.005, 0.01, 0.05, 0.10\}$ ($\delta = 0.05$), the risk gate calibrated $(1 - \lambda^*) = 0.999$.
-* On the held-out test split, the gate withheld fast-path exits for items that did not meet the statistical certainty threshold, guaranteeing:
-  $$P(\text{error} \mid \text{EXIT}) = 0.00\% \le \epsilon$$
-* **Key Theoretical Finding:** Unlike heuristic gates that silently release wrong predictions on out-of-distribution or challenging inputs, the conformal risk gate mathematically identified uncertainty and escalated queries to the expanded generative canvas, achieving provable zero-error operation on the fast path.
-
----
-
-## 5. Visualizations & Empirical Artifacts
-
-Generated artifacts available in `results/` and `experiments/`:
-* **Figure 1 (4-Panel Publication Chart):** `results/pareto_frontier.png` and `experiments/real_pareto_frontier_v2.png`
-  - *Panel A:* End-to-End Median Latency Comparison across Paradigms (log-scale).
-  - *Panel B:* Conformal Error Bound Verification ($P(\text{error} \mid \text{EXIT}) \le \epsilon$).
-  - *Panel C:* Step-1 Fast-Path Exit Coverage vs. Risk Tolerance.
-  - *Panel D:* Empirical Accuracy vs. Latency Pareto Frontier.
-* **Trained LoRA Weights:** `models/reflex_lora_v1/adapter_model.safetensors` (45.9 MB) and `models/reflex_lora_v1/training_history.json`.
-* **Raw Benchmark Telemetry:** `results/final_pareto_benchmark_results.json`.
-* **Microsecond KV Retention Data:** `experiments/kv_retention_timing_results.json`.
-
----
-
-## 6. Exact Reproduction Commands
-
-```bash
-# 1. Activate isolated Python environment on DGX host
-source .venv/bin/activate
-
-# 2. Run unit tests suite (13 passing tests)
-python -m unittest discover tests/
-
-# 3. Download and partition real benchmark datasets
-python scripts/prepare_datasets.py --verify-splits
-
-# 4. Measure exact microsecond KV-cache retention and expansion latencies
-python experiments/test_kv_retention_timing.py
-
-# 5. Execute calibrated multi-task LoRA fine-tuning
-python experiments/train_reflex_lora.py
-
-# 6. Execute full 4-way Pareto benchmarking suite and plot figures
-python experiments/benchmark_pareto_suite.py
-```
+The prototype now demonstrates useful **local tool-name routing** on a small BFCL-derived set, real model loading, a short decoder read, KV reuse, and a working API shell. It does **not** yet establish broad tool-call correctness, learned argument synthesis, a useful calibrated fast path, or a quality-matched speedup. Public release is reasonable as an explicitly experimental repository with these limits. A research paper needs an independent larger test set, credible matched baselines, measured latency and uncertainty, and a contribution beyond prior short-canvas structured reads.
