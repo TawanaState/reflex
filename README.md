@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ Project Reflex: Sub-150ms Discrete Decision Reflexes on Discrete Diffusion Models
+# ⚡ Project Reflex: A Unified Decision-and-Generation Runtime for Diffusion Language Models
 
 **A Unified Control-First Serving Framework for Autonomous Agents & Tool Routing**
 
