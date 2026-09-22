@@ -1,0 +1,25 @@
+{
+  "source_question_url": "https://raw.githubusercontent.com/ShishirPatil/gorilla/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_live_multiple.json",
+  "source_answer_url": "https://raw.githubusercontent.com/ShishirPatil/gorilla/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_live_multiple.json",
+  "source_revision": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8",
+  "raw_count": 1053,
+  "dropped_overlap_with_train": 1,
+  "final_count": 1051,
+  "candidate_count_distribution": {
+    "2": 224,
+    "3": 301,
+    "4": 176,
+    "5": 195,
+    "6": 78,
+    "7": 33,
+    "8": 18,
+    "9": 11,
+    "10": 15
+  },
+  "arg_bucket_distribution": {
+    "primitive": 974,
+    "freetext": 52,
+    "atomic": 25
+  },
+  "note": "Independent held-out routing set from a disjoint BFCL source file (live_multiple, real user-collected queries) vs. the synthetic 'multiple' category used for data/bfcl/{train,cal,test}. Exact user_query string overlap with train/cal/test was checked and dropped."
+}

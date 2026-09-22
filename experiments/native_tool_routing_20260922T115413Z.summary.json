@@ -1,0 +1,74 @@
+{
+  "run_id": "20260922T115413Z",
+  "trace_path": "/home/tawana/research/reflex/experiments/native_tool_routing_20260922T115413Z.jsonl",
+  "num_items": 1051,
+  "max_new_tokens": 256,
+  "conditions": {
+    "base_original": {
+      "total": 1051,
+      "correct_name": 981,
+      "accuracy_name": 0.9333967649857279,
+      "correct_args_loose": 813,
+      "accuracy_args_loose": 0.7735490009514748,
+      "mean_latency_ms": 1470.522881545114,
+      "accuracy_by_candidate_count": {
+        "2": "207/224",
+        "3": "286/301",
+        "4": "160/176",
+        "5": "184/195",
+        "6": "69/78",
+        "7": "33/33",
+        "8": "17/18",
+        "9": "11/11",
+        "10": "14/15"
+      },
+      "accuracy_by_arg_bucket": {
+        "primitive": {
+          "name": "911/974",
+          "args_loose": "755/974"
+        },
+        "atomic": {
+          "name": "25/25",
+          "args_loose": "25/25"
+        },
+        "freetext": {
+          "name": "45/52",
+          "args_loose": "33/52"
+        }
+      }
+    },
+    "base_permuted": {
+      "total": 1051,
+      "correct_name": 979,
+      "accuracy_name": 0.9314938154138915,
+      "correct_args_loose": 812,
+      "accuracy_args_loose": 0.7725975261655567,
+      "mean_latency_ms": 1473.1746218533951,
+      "accuracy_by_candidate_count": {
+        "2": "207/224",
+        "3": "281/301",
+        "4": "160/176",
+        "5": "185/195",
+        "6": "71/78",
+        "7": "33/33",
+        "8": "17/18",
+        "9": "11/11",
+        "10": "14/15"
+      },
+      "accuracy_by_arg_bucket": {
+        "primitive": {
+          "name": "908/974",
+          "args_loose": "753/974"
+        },
+        "atomic": {
+          "name": "25/25",
+          "args_loose": "25/25"
+        },
+        "freetext": {
+          "name": "46/52",
+          "args_loose": "34/52"
+        }
+      }
+    }
+  }
+}

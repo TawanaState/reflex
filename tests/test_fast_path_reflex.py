@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Test Suite 1: Fast-Path Reflex Tool Routing.
-Validates that single-turn discrete tool invocations halt at Step 1,
-execute in sub-150ms steady-state, and return valid OpenAI tool_calls.
+Test Suite 1: Native Tool-Calling Routing.
+Validates that single-turn atomic tool invocations return valid OpenAI
+tool_calls through the native tool-calling path. Latency is real generation
+through the official sampler (~1-2s typical for a warm request), not a
+single masked-token read -- see RESULTS.md for measured figures and why the
+originally proposed sub-150ms figure no longer applies beyond a pure
+argument-free reflex.
 """
 
 import os
@@ -88,8 +92,8 @@ def test_fast_path_reflex():
         # Assertions
         assert finish_reason == "tool_calls", f"Expected finish_reason 'tool_calls', got '{finish_reason}'"
         assert tool_calls is not None and len(tool_calls) > 0, "No tool_calls in message"
-        assert meta.get("execution_path") == "FAST_PATH_STEP_1", f"Expected FAST_PATH_STEP_1, got {meta.get('execution_path')}"
-        assert meta.get("steps_executed") == 1, f"Expected 1 step executed, got {meta.get('steps_executed')}"
+        assert meta.get("execution_path") == "NATIVE_TOOL_CALL", f"Expected NATIVE_TOOL_CALL, got {meta.get('execution_path')}"
+        assert meta.get("steps_executed", 0) >= 1, f"Expected at least 1 decoder forward pass, got {meta.get('steps_executed')}"
 
     mean_wall = sum(latencies) / len(latencies)
     print("\n" + "-" * 75)

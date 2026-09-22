@@ -342,34 +342,25 @@ async def reload_runtime():
     global engine
     import importlib
     import src.schema.inspector as s_insp
-    import src.schema.compiler as s_comp
     import src.schema as s_pkg
-    import src.engine.scheduler as e_sched
-    import src.engine.canvas as e_canv
+    import src.engine.native_tool_calling as e_native
     import src.engine.runner as e_run
     import src.engine as e_pkg
-    import src.canvas as c_pkg
 
     importlib.reload(s_insp)
-    importlib.reload(s_comp)
     importlib.reload(s_pkg)
-    importlib.reload(e_sched)
-    importlib.reload(e_canv)
+    importlib.reload(e_native)
     importlib.reload(e_run)
     importlib.reload(e_pkg)
-    importlib.reload(c_pkg)
 
     if engine is not None:
-        engine.scheduler = e_sched.DynamicStepScheduler(
-            default_generative_steps=engine.settings.GENERATIVE_STEPS,
-            default_generative_length=engine.settings.MAX_CANVAS_LENGTH,
-        )
-        engine._parse_messages = e_run.ReflexEngine._parse_messages.__get__(engine, e_run.ReflexEngine)
-        engine._run_reflex = e_run.ReflexEngine._run_reflex.__get__(engine, e_run.ReflexEngine)
-        engine._run_vanilla = e_run.ReflexEngine._run_vanilla.__get__(engine, e_run.ReflexEngine)
-        engine._unroll_generative_synthesis = e_run.ReflexEngine._unroll_generative_synthesis.__get__(engine, e_run.ReflexEngine)
-        engine.generate = e_run.ReflexEngine.generate.__get__(engine, e_run.ReflexEngine)
-    return {"status": "success", "message": "All schema & engine modules reloaded successfully"}
+        # Rebinding the instance's class to the freshly reloaded class object
+        # (rather than patching individual methods) correctly picks up
+        # staticmethod/classmethod members too (e.g. _estimate_forward_passes,
+        # _clean_display_text), which per-method __get__ rebinding would bind
+        # incorrectly (an extra `self` argument).
+        engine.__class__ = e_run.ReflexEngine
+    return {"status": "success", "message": "Schema & engine modules reloaded successfully"}
 
 
 

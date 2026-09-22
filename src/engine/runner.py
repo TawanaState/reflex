@@ -1,17 +1,32 @@
 """
-KV-Warmed Tiered Execution Runner for Project Reflex.
-Orchestrates:
-  - Phase 1: Step-1 discrete tool routing on micro-control canvas
-  - Tier 1: Zero-argument atomic tool call after one decoder pass
-  - Tier 2: One explicit numeric argument extracted and validated from user text
-  - Tier 3: Multi-pass generative canvas, with required-field validation
-  - Seamless in-memory KV-cache retention across tiers
+Execution Runner for Project Reflex.
+
+2026-09-22 architecture change: tool routing and argument synthesis now go
+through DiffusionGemma's OWN trained function-calling format and the OFFICIAL
+model.generate() (its EntropyBoundSampler-driven block-diffusion loop), instead of a custom "select a
+tool index into <unusedN>" micro-canvas plus a hand-written deterministic
+numeric extractor. On a frozen, independent, 1,051-example held-out BFCL-
+derived routing set (data/bfcl/live_eval.jsonl; disjoint source file from the
+one used for LoRA training, zero query overlap), this native approach reached
+93.3% tool-name accuracy (93.1% under a deterministic candidate-order
+permutation -- i.e. no positional shortcut) and ~77% fully-correct calls
+(right tool AND valid arguments, including free-text and nested-object
+arguments) with NO training at all. See RESULTS.md and
+experiments/native_tool_routing_*.summary.json for the measured evidence.
+The old scheme scored 0/5 on free-text arguments and used a deterministic
+regex extractor (not learned synthesis) for numeric ones; it is preserved
+for archival inspection in git history but is no longer the serving path.
+
+Because tool selection and argument synthesis now happen in a single
+model.generate() call, there is no longer a separate Phase-1/Phase-2 KV-reuse
+handoff to manage: the official generation loop owns its own caching.
 """
 
 import base64
 import io
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -24,24 +39,12 @@ from PIL import Image
 from transformers import AutoProcessor, AutoTokenizer, DiffusionGemmaForBlockDiffusion
 
 from ..config import Settings, get_settings
-from ..schema.compiler import (
-    CanvasCompiler,
-    Choice,
-    CompiledCanvas,
-    Noul,
-    Schema,
-    compile_tier2_argument_canvas,
+from ..schema.inspector import Tier, inspect_tool_schema
+from .native_tool_calling import (
+    build_native_tools,
+    parse_gemma_tool_call,
+    validate_and_cast_call_args,
 )
-from ..schema.inspector import Tier, ToolComplexity, inspect_tool_schema
-from .canvas import (
-    ToolDefinition,
-    compile_tools_to_schema,
-    parse_and_validate_primitives,
-    extract_unambiguous_numeric_argument,
-    parse_openai_tools,
-)
-from .scheduler import DynamicStepScheduler, ExecutionPlan
-from ..risk_gate import ConformalRiskGate, ExitAction, RiskGateResult
 
 
 @dataclass
@@ -51,7 +54,7 @@ class EngineOutput:
     tool_calls: Optional[List[Dict[str, Any]]]
     finish_reason: str
     execution_path: str
-    tier: str
+    tier: Optional[str]
     latency_ms: float
     confidence: float
     steps_executed: int
@@ -98,59 +101,53 @@ class ReflexEngine:
         self.model.eval()
         print(f"[ReflexEngine] Base model loaded in {time.time() - t0:.1f}s.")
 
-        # 4. Attach LoRA Adapter
+        # 4. Attach LoRA Adapter (opt-in only)
+        # models/reflex_lora_v1 and v2 were trained to classify a tool index
+        # into <unusedN> control tokens -- a task the engine no longer
+        # performs (see the module docstring). They were never trained or
+        # evaluated against native <|tool_call>...<tool_call|> generation, so
+        # they are NOT auto-attached here. Set REFLEX_LORA_PATH to a real
+        # adapter directory only after validating it against the native
+        # tool-calling path (e.g. re-running experiments/eval_native_tool_calling.py
+        # with --skip-lora removed) -- attaching an unvalidated adapter can
+        # silently perturb the base model's native tool-calling quality.
         self.is_lora_loaded = False
         if self.settings.REFLEX_MODE == "reflex" and os.path.exists(self.settings.REFLEX_LORA_PATH):
-            print(f"[ReflexEngine] Injecting trained Reflex LoRA from {self.settings.REFLEX_LORA_PATH}...")
+            print(f"[ReflexEngine] WARNING: attaching LoRA from {self.settings.REFLEX_LORA_PATH}. "
+                  f"This adapter was trained for the retired index-selection scheme and has not "
+                  f"been validated against native tool calling. See runner.py module docstring.")
             self.model.model.decoder = PeftModel.from_pretrained(
                 self.model.model.decoder,
                 self.settings.REFLEX_LORA_PATH,
             )
             self.model.eval()
             self.is_lora_loaded = True
-            print("[ReflexEngine] Reflex LoRA adapter attached successfully.")
 
-        # 5. Initialize Conformal Risk Gate & Step Scheduler
-        self.risk_gate = ConformalRiskGate(
-            epsilon=self.settings.CONFORMAL_EPS,
-            delta=0.05,
-            default_threshold=0.90,
-            bound_type="clopper_pearson",
-        )
-        # This is an explicit heuristic until a matching calibration artifact exists.
-        # Never mark a fixed threshold as statistically calibrated.
-
-        self.scheduler = DynamicStepScheduler(
-            default_generative_steps=self.settings.GENERATIVE_STEPS,
-            default_generative_length=self.settings.MAX_CANVAS_LENGTH,
-        )
+        # Conformal risk calibration (src/risk_gate.py) and the discrete step
+        # scheduler (src/engine/scheduler.py) were built around the retired
+        # per-slot softmax micro-canvas and are not wired into the native
+        # tool-calling path. Both remain as independently tested modules for
+        # future calibration work (see PROMPT.md / RESULTS.md "Forget
+        # conformal prediction for now" -- deferred, not deleted).
 
     def _parse_messages(
         self,
         messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-    ) -> Tuple[str, List[Image.Image]]:
-        """Parses OpenAI messages and formats tool menus and image tokens."""
+    ) -> Tuple[List[Dict[str, Any]], List[Image.Image]]:
+        """Parses OpenAI messages into chat-template-ready role/content dicts and
+        extracts any images. Tools are NOT baked into message text here -- the
+        native tool-calling path passes them to apply_chat_template's own
+        `tools=` argument, which renders the model's trained function-declaration
+        block instead of a hand-written prompt."""
         parsed_messages = []
         images: List[Image.Image] = []
 
-        tools_prefix = ""
-        tools_suffix = ""
-        if tools and len(tools) > 0:
-            parsed_tools = parse_openai_tools(tools)
-            tools_doc = "\n".join([f"[{i}] {t.name}: {t.description}" for i, t in enumerate(parsed_tools)])
-            tools_prefix = f"Available Tools:\n{tools_doc}\n\nUser Request: "
-            tools_suffix = f"\n\nSelect the most appropriate tool index [0 to {len(parsed_tools)-1}]:"
-
-        for idx, msg in enumerate(messages):
+        for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
 
             if isinstance(content, str):
-                text = content
-                if tools_prefix and idx == len(messages) - 1:
-                    text = f"{tools_prefix}{text}{tools_suffix}"
-                parsed_messages.append({"role": role, "content": text})
+                parsed_messages.append({"role": role, "content": content})
             elif isinstance(content, list):
                 text_parts = []
                 for part in content:
@@ -166,22 +163,11 @@ class ReflexEngine:
                         if loaded_img is not None:
                             images.append(loaded_img)
                             text_parts.append("<|image|>")
-                text = "\n".join(text_parts)
-                if tools_prefix and idx == len(messages) - 1:
-                    text = f"{tools_prefix}{text}{tools_suffix}"
-                parsed_messages.append({"role": role, "content": text})
+                parsed_messages.append({"role": role, "content": "\n".join(text_parts)})
             else:
-                text = str(content)
-                if tools_prefix and idx == len(messages) - 1:
-                    text = f"{tools_prefix}{text}{tools_suffix}"
-                parsed_messages.append({"role": role, "content": text})
+                parsed_messages.append({"role": role, "content": str(content)})
 
-        prompt_text = self.tokenizer.apply_chat_template(
-            parsed_messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        return prompt_text, images
+        return parsed_messages, images
 
     def _load_image(self, url: str) -> Optional[Image.Image]:
         try:
@@ -218,6 +204,65 @@ class ReflexEngine:
                 tensor_inputs[k] = v
         return tensor_inputs
 
+    def _build_native_chat_inputs(
+        self,
+        parsed_messages: List[Dict[str, Any]],
+        images: List[Image.Image],
+        tools: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, torch.Tensor]:
+        """Builds tokenized inputs via the model's own chat template, passing
+        `tools` straight through so the template renders DiffusionGemma's
+        trained <|tool>...<tool|> function-declaration block -- the mechanism
+        validated in experiments/native_tool_routing_*.jsonl -- rather than a
+        hand-written tool-menu prompt.
+
+        The images branch (self.processor.apply_chat_template) is best-effort:
+        the 2026-09-22 evidence run and live smoke test were text-only. Verify
+        against tests/test_multimodal.py against a live server before relying
+        on multimodal + native tool calling together."""
+        native_tools = build_native_tools(tools)
+        chat_kwargs: Dict[str, Any] = dict(
+            tools=native_tools, add_generation_prompt=True, return_dict=True, return_tensors="pt",
+        )
+        if images and self.processor is not None:
+            inputs = self.processor.apply_chat_template(
+                parsed_messages, images=images if len(images) > 1 else images[0], **chat_kwargs,
+            )
+        else:
+            inputs = self.tokenizer.apply_chat_template(parsed_messages, **chat_kwargs)
+
+        tensor_inputs = {}
+        for k, v in inputs.items():
+            tensor_inputs[k] = v.to(self.device) if isinstance(v, torch.Tensor) else v
+        return tensor_inputs
+
+    @staticmethod
+    def _estimate_forward_passes(generation_output: Any, completion_tokens: int) -> int:
+        """Recovers the real decoder forward-pass count from the official
+        generate() output (tokens_per_forward = valid_tokens / forward_passes,
+        per transformers' _compute_tokens_per_forward), instead of reporting a
+        step count that was never actually executed. Falls back to a
+        conservative 1-pass-per-token estimate if the field is unavailable."""
+        tokens_per_forward = getattr(generation_output, "tokens_per_forward", None)
+        if tokens_per_forward is None or completion_tokens == 0:
+            return max(completion_tokens, 1)
+        ratio = float(tokens_per_forward.reshape(-1)[0].item())
+        if ratio <= 0:
+            return max(completion_tokens, 1)
+        return max(1, round(completion_tokens / ratio))
+
+    _THOUGHT_CHANNEL_RE = re.compile(r"<\|channel>thought.*?<channel\|>", re.DOTALL)
+    _ANGLE_TAG_RE = re.compile(r"<[^<>]{1,64}>")
+
+    @classmethod
+    def _clean_display_text(cls, raw_generated_text: str) -> str:
+        """Strips the model's internal reasoning channel and special-token
+        markers from raw (skip_special_tokens=False) decoded text, for the
+        case where no tool call was emitted and the text is shown to the user."""
+        text = cls._THOUGHT_CHANNEL_RE.sub("", raw_generated_text)
+        text = cls._ANGLE_TAG_RE.sub("", text)
+        return text.strip()
+
     def generate(
         self,
         messages: List[Dict[str, Any]],
@@ -235,29 +280,27 @@ class ReflexEngine:
             if not forced_name or len(matches) != 1:
                 raise ValueError("tool_choice names no offered function")
             tools = matches
-        latest_user_content = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-        user_text = latest_user_content if isinstance(latest_user_content, str) else ""
-        prompt_text, images = self._parse_messages(messages, tools=tools)
-        tensor_inputs = self._prepare_inputs(prompt_text, images)
-        prompt_len = tensor_inputs["input_ids"].shape[1]
 
+        parsed_messages, images = self._parse_messages(messages)
         t0 = time.perf_counter()
 
         if self.settings.REFLEX_MODE == "vanilla":
+            prompt_text = self.tokenizer.apply_chat_template(
+                parsed_messages, tokenize=False, add_generation_prompt=True,
+            )
+            tensor_inputs = self._prepare_inputs(prompt_text, images)
             return self._run_vanilla(
                 tensor_inputs=tensor_inputs,
-                prompt_tokens=prompt_len,
+                prompt_tokens=tensor_inputs["input_ids"].shape[1],
                 max_tokens=max_tokens or self.settings.MAX_CANVAS_LENGTH,
                 t0=t0,
             )
         else:
             return self._run_reflex(
-                tensor_inputs=tensor_inputs,
-                prompt_tokens=prompt_len,
+                parsed_messages=parsed_messages,
+                images=images,
                 tools=tools,
-                tool_choice=tool_choice,
-                user_text=user_text,
-                max_tokens=max_tokens or self.settings.MAX_CANVAS_LENGTH,
+                max_tokens=max_tokens,
                 t0=t0,
             )
 
@@ -298,255 +341,126 @@ class ReflexEngine:
 
     def _run_reflex(
         self,
-        tensor_inputs: Dict[str, torch.Tensor],
-        prompt_tokens: int,
+        parsed_messages: List[Dict[str, Any]],
+        images: List[Image.Image],
         tools: Optional[List[Dict[str, Any]]],
-        tool_choice: Optional[Union[str, Dict[str, Any]]],
-        user_text: str,
-        max_tokens: int,
+        max_tokens: Optional[int],
         t0: float,
     ) -> EngineOutput:
         has_tools = bool(tools and len(tools) > 0)
-        parsed_tools = parse_openai_tools(tools) if has_tools else []
-        tool_map = {t.name: t for t in parsed_tools}
+        tool_by_name: Dict[str, Dict[str, Any]] = {}
+        if has_tools:
+            tool_by_name = {t.get("function", t).get("name"): t for t in tools}
+
+        # DiffusionGemma generates in fixed self.model.config.canvas_length
+        # (256) blocks: max_new_tokens only controls how many WHOLE blocks
+        # run (ceil(max_new_tokens / canvas_length)), not compute within one.
+        # An earlier version of this method scaled max_new_tokens down per
+        # tool-schema tier (e.g. 48 for atomic-only menus) intending to save
+        # compute; measured completion_tokens showed this had NO effect below
+        # one block (still 256 tokens generated either way), so it has been
+        # removed rather than left in as a fake optimization. The real
+        # adaptive-compute signal in this architecture is the number of
+        # denoising steps the official sampler's own entropy-based stopping
+        # criterion uses within a block (see steps_executed in the response
+        # metadata, and RESULTS.md) -- that varies genuinely with request
+        # difficulty and is not something this method controls.
+        canvas_length = getattr(self.model.config, "canvas_length", 256)
+        gen_budget = min(max_tokens, canvas_length) if max_tokens else canvas_length
+
+        tensor_inputs = self._build_native_chat_inputs(parsed_messages, images, tools)
+        prompt_len = tensor_inputs["input_ids"].shape[1]
 
         with torch.inference_mode():
-            # 1. Prompt Prefill (computes and retains in-memory prompt KV representations)
-            enc_out = self.model.model.encoder(**tensor_inputs)
-            past_kv = enc_out.past_key_values
-
-            if has_tools:
-                compiled_canvas, _ = compile_tools_to_schema(
-                    tools=tools,
-                    tokenizer=self.tokenizer,
-                    mask_token_id=self.mask_token_id,
-                    allow_direct_response=False,
-                )
-            else:
-                schema = Schema(fields={
-                    "action": Choice(options=["direct_response", "search", "calculate"]),
-                    "needs_args": Noul(true_label="yes", false_label="no"),
-                })
-                compiler = CanvasCompiler(tokenizer=self.tokenizer, mask_token_id=self.mask_token_id)
-                compiled_canvas = compiler.compile(schema)
-
-            micro_canvas = compiled_canvas.canvas_tokens.to(self.device)
-
-            # 2. Phase 1: Step-1 Forward Pass on Micro-Control Canvas (reusing past_kv)
-            step1_out = self.model(
-                input_ids=None,
-                past_key_values=past_kv,
-                decoder_input_ids=micro_canvas,
-            )
-            step1_logits = step1_out.logits
-
-            # 3. Extract candidate logits & evaluate Conformal Risk Gate
-            slot_logits = {}
-            for slot_name, slot in compiled_canvas.slots.items():
-                pos = slot.canvas_position
-                raw_slot_logits = step1_logits[0, pos]
-                slot_logits[slot_name] = (
-                    raw_slot_logits,
-                    slot.candidate_labels,
-                    slot.candidate_token_ids,
-                )
-
-            risk_result = self.risk_gate.evaluate_logits(
-                slot_logits=slot_logits,
-                has_synthesis_field=compiled_canvas.has_synthesis,
+            generation_kwargs = {k: v for k, v in tensor_inputs.items() if k not in ("input_ids", "attention_mask")}
+            gen_out = self.model.generate(
+                input_ids=tensor_inputs["input_ids"],
+                attention_mask=tensor_inputs.get("attention_mask"),
+                max_new_tokens=gen_budget,
+                **generation_kwargs,
             )
 
-            action_pred = risk_result.slot_predictions.get("action")
-            selected_action = action_pred.top_label if action_pred else "direct_response"
-            overall_conf = risk_result.overall_confidence
-
-            # If no tools or model chose direct response, branch to generative expansion
-            if not has_tools or selected_action not in tool_map:
-                return self._unroll_generative_synthesis(
-                    past_kv=past_kv,
-                    prompt_tokens=prompt_tokens,
-                    max_tokens=max_tokens,
-                    overall_conf=overall_conf,
-                    t0=t0,
-                    candidate_action=selected_action,
-                )
-
-            # A low-confidence route must not become an executable tool call.
-            # Current threshold is heuristic until separately calibrated.
-            if not risk_result.is_safe_to_exit:
-                return self._unroll_generative_synthesis(
-                    past_kv=past_kv,
-                    prompt_tokens=prompt_tokens,
-                    max_tokens=max_tokens,
-                    overall_conf=overall_conf,
-                    t0=t0,
-                    candidate_action=selected_action,
-                )
-
-            # Tool is identified! Inspect its schema complexity
-            raw_tool_def = next(t for t in tools if t.get("function", t).get("name") == selected_action)
-            complexity = inspect_tool_schema(raw_tool_def)
-            plan = self.scheduler.schedule(complexity, requested_max_tokens=max_tokens)
-
-            # =========================================================
-            # TIER 1: ATOMIC ACTION (0 Args Required) -> 1 Forward Pass
-            # =========================================================
-            if plan.tier == Tier.ATOMIC:
-                step1_lat = (time.perf_counter() - t0) * 1000.0
-                call_id = f"call_{uuid.uuid4().hex[:8]}"
-                tool_call = {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": selected_action,
-                        "arguments": "{}",
-                    },
-                }
-                return EngineOutput(
-                    content=None,
-                    tool_calls=[tool_call],
-                    finish_reason="tool_calls",
-                    execution_path="FAST_PATH_STEP_1",
-                    tier=Tier.ATOMIC.value,
-                    latency_ms=step1_lat,
-                    confidence=overall_conf,
-                    steps_executed=1,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=0,
-                )
-
-            # =========================================================
-            # TIER 2: PARAMETRIC PRIMITIVE -> EXPLICIT NUMERIC EXTRACTION
-            # =========================================================
-            if plan.tier == Tier.PARAMETRIC_PRIMITIVE:
-                # The v2 adapter was trained for action routing only. Do not turn
-                # an untrained value canvas into an executable numeric argument.
-                # Support the narrow case whose value is explicit and unambiguous.
-                parsed_args = extract_unambiguous_numeric_argument(user_text, complexity)
-                total_lat = (time.perf_counter() - t0) * 1000.0
-                if parsed_args is None:
-                    return EngineOutput(
-                        content="Unable to determine a unique valid numeric argument.",
-                        tool_calls=None,
-                        finish_reason="stop",
-                        execution_path="ARGUMENT_VALIDATION_FAILED",
-                        tier=Tier.PARAMETRIC_PRIMITIVE.value,
-                        latency_ms=total_lat,
-                        confidence=overall_conf,
-                        steps_executed=1,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=0,
-                        candidate_action=selected_action,
-                    )
-                tool_call = {
-                    "id": f"call_{uuid.uuid4().hex[:8]}",
-                    "type": "function",
-                    "function": {"name": selected_action, "arguments": json.dumps(parsed_args)},
-                }
-                return EngineOutput(
-                    content=None,
-                    tool_calls=[tool_call],
-                    finish_reason="tool_calls",
-                    execution_path="TIER_2_EXPLICIT_NUMERIC_EXTRACTION",
-                    tier=Tier.PARAMETRIC_PRIMITIVE.value,
-                    latency_ms=total_lat,
-                    confidence=overall_conf,
-                    steps_executed=1,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=0,
-                    candidate_action=selected_action,
-                )
-
-            # =========================================================
-            # TIER 3: OPEN GENERATIVE SYNTHESIS -> 12-20 Denoising Steps
-            # =========================================================
-            gen_len = plan.canvas_length
-            gen_canvas = torch.full((1, gen_len), fill_value=self.mask_token_id, dtype=torch.long, device=self.device)
-
-            steps_done = 0
-            for _ in range(plan.max_denoise_steps):
-                out = self.model(input_ids=None, past_key_values=past_kv, decoder_input_ids=gen_canvas)
-                gen_canvas = torch.argmax(out.logits, dim=-1)
-                steps_done += 1
-
-            total_lat = (time.perf_counter() - t0) * 1000.0
-            generated_text = self.tokenizer.decode(gen_canvas[0], skip_special_tokens=True).strip()
-
-            # A generated payload is an executable tool call only when it parses
-            # and all declared required fields pass validation.
-            try:
-                raw_arguments = json.loads(generated_text)
-            except json.JSONDecodeError:
-                raw_arguments = None
-            parsed_args = parse_and_validate_primitives(generated_text, complexity) if isinstance(raw_arguments, dict) else {}
-            if not isinstance(raw_arguments, dict) or any(name not in parsed_args for name in complexity.required_parameters):
-                return EngineOutput(
-                    content="Unable to produce valid required tool arguments.",
-                    tool_calls=None,
-                    finish_reason="stop",
-                    execution_path="ARGUMENT_VALIDATION_FAILED",
-                    tier=Tier.GENERATIVE_SYNTHESIS.value,
-                    latency_ms=total_lat,
-                    confidence=overall_conf,
-                    steps_executed=1 + steps_done,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=gen_len,
-                )
-            call_id = f"call_{uuid.uuid4().hex[:8]}"
-            arg_str = json.dumps(parsed_args)
-            tool_call = {
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": selected_action,
-                    "arguments": arg_str,
-                },
-            }
-            return EngineOutput(
-                content=None,
-                tool_calls=[tool_call],
-                finish_reason="tool_calls",
-                execution_path="TIER_3_GENERATIVE_SYNTHESIS",
-                tier=Tier.GENERATIVE_SYNTHESIS.value,
-                latency_ms=total_lat,
-                confidence=overall_conf,
-                steps_executed=1 + steps_done,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=gen_len,
-            )
-
-    def _unroll_generative_synthesis(
-        self,
-        past_kv: Any,
-        prompt_tokens: int,
-        max_tokens: int,
-        overall_conf: float,
-        t0: float,
-        candidate_action: Optional[str] = None,
-    ) -> EngineOutput:
-        """Handles pure text generation when no tool is invoked."""
-        gen_len = min(max_tokens, self.settings.MAX_CANVAS_LENGTH)
-        gen_canvas = torch.full((1, gen_len), fill_value=self.mask_token_id, dtype=torch.long, device=self.device)
-
-        steps = self.settings.GENERATIVE_STEPS
-        for _ in range(steps):
-            out = self.model(input_ids=None, past_key_values=past_kv, decoder_input_ids=gen_canvas)
-            gen_canvas = torch.argmax(out.logits, dim=-1)
-
+        sequences = gen_out.sequences if hasattr(gen_out, "sequences") else gen_out
+        gen_ids = sequences[0, prompt_len:]
+        raw_text = self.tokenizer.decode(gen_ids, skip_special_tokens=False)
+        completion_tokens = int(gen_ids.shape[0])
+        forward_passes = self._estimate_forward_passes(gen_out, completion_tokens)
         total_lat = (time.perf_counter() - t0) * 1000.0
-        generated_text = self.tokenizer.decode(gen_canvas[0], skip_special_tokens=True).strip()
 
+        tool_name, raw_args = parse_gemma_tool_call(raw_text)
+
+        if tool_name is None:
+            # The model answered directly instead of calling a tool -- either
+            # no tools were offered, the request didn't need one, or (for
+            # ambiguous/context-dependent requests) it is asking for
+            # clarification rather than guessing. See RESULTS.md for examples
+            # of this from the 2026-09-22 native-calling probe.
+            return EngineOutput(
+                content=self._clean_display_text(raw_text),
+                tool_calls=None,
+                finish_reason="stop",
+                execution_path="NATIVE_DIRECT_RESPONSE",
+                tier=None,
+                latency_ms=total_lat,
+                confidence=0.0,
+                steps_executed=forward_passes,
+                prompt_tokens=prompt_len,
+                completion_tokens=completion_tokens,
+            )
+
+        if tool_name not in tool_by_name:
+            return EngineOutput(
+                content=f"Model referenced a tool not in the offered menu: {tool_name}",
+                tool_calls=None,
+                finish_reason="stop",
+                execution_path="NATIVE_UNKNOWN_TOOL_REFERENCE",
+                tier=None,
+                latency_ms=total_lat,
+                confidence=0.0,
+                steps_executed=forward_passes,
+                prompt_tokens=prompt_len,
+                completion_tokens=completion_tokens,
+                candidate_action=tool_name,
+            )
+
+        complexity = inspect_tool_schema(tool_by_name[tool_name])
+        validated_args = validate_and_cast_call_args(raw_args, complexity) if raw_args is not None else None
+
+        if validated_args is None:
+            # raw_args is None either because the body failed to parse, or
+            # validate_and_cast_call_args rejected a missing/out-of-range
+            # required field. Fail closed rather than emit a call the caller
+            # cannot trust, matching the project's established policy.
+            return EngineOutput(
+                content="Unable to produce valid required tool arguments.",
+                tool_calls=None,
+                finish_reason="stop",
+                execution_path="ARGUMENT_VALIDATION_FAILED",
+                tier=complexity.tier.value,
+                latency_ms=total_lat,
+                confidence=0.3,
+                steps_executed=forward_passes,
+                prompt_tokens=prompt_len,
+                completion_tokens=completion_tokens,
+                candidate_action=tool_name,
+            )
+
+        tool_call = {
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {"name": tool_name, "arguments": json.dumps(validated_args)},
+        }
         return EngineOutput(
-            content=generated_text,
-            tool_calls=None,
-            finish_reason="stop",
-            execution_path="EXPANDED_GENERATIVE_PATH",
-            tier=Tier.GENERATIVE_SYNTHESIS.value,
+            content=None,
+            tool_calls=[tool_call],
+            finish_reason="tool_calls",
+            execution_path="NATIVE_TOOL_CALL",
+            tier=complexity.tier.value,
             latency_ms=total_lat,
-            confidence=overall_conf,
-            steps_executed=1 + steps,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=gen_len,
-            candidate_action=candidate_action,
+            confidence=1.0,
+            steps_executed=forward_passes,
+            prompt_tokens=prompt_len,
+            completion_tokens=completion_tokens,
+            candidate_action=tool_name,
         )
 

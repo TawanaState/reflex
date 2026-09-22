@@ -57,10 +57,10 @@ def test_generative_expansion():
     # Assertions
     assert finish_reason == "stop", f"Expected finish_reason 'stop', got '{finish_reason}'"
     assert content is not None and len(content.strip()) > 0, "Expected non-empty generated text"
-    assert meta.get("execution_path") in ["EXPANDED_GENERATIVE_PATH", "VANILLA_FIXED_DIFFUSION"], (
+    assert meta.get("execution_path") in ["NATIVE_DIRECT_RESPONSE", "VANILLA_FIXED_DIFFUSION"], (
         f"Unexpected execution path: {meta.get('execution_path')}"
     )
-    assert meta.get("steps_executed", 0) > 1, f"Expected > 1 steps executed, got {meta.get('steps_executed')}"
+    assert meta.get("steps_executed", 0) >= 1, f"Expected at least 1 decoder forward pass, got {meta.get('steps_executed')}"
 
     print("\nSUCCESS: Generative expansion verified.")
     print("=" * 75)
