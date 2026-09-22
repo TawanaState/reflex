@@ -118,6 +118,7 @@ class Usage(BaseModel):
 
 class ReflexMetadata(BaseModel):
     execution_path: str
+    tier: Optional[str] = None
     latency_ms: float
     confidence: float
     steps_executed: int
@@ -242,6 +243,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     metadata = ReflexMetadata(
         execution_path=out.execution_path,
+        tier=out.tier,
         latency_ms=round(out.latency_ms, 2),
         confidence=round(out.confidence, 4),
         steps_executed=out.steps_executed,
@@ -337,16 +339,36 @@ async def reload_runtime():
     """Dynamically reloads engine logic without reloading base model weights from disk."""
     global engine
     import importlib
-    import src.canvas as canvas_mod
-    import src.engine as engine_mod
-    importlib.reload(canvas_mod)
-    importlib.reload(engine_mod)
+    import src.schema.inspector as s_insp
+    import src.schema.compiler as s_comp
+    import src.schema as s_pkg
+    import src.engine.scheduler as e_sched
+    import src.engine.canvas as e_canv
+    import src.engine.runner as e_run
+    import src.engine as e_pkg
+    import src.canvas as c_pkg
+
+    importlib.reload(s_insp)
+    importlib.reload(s_comp)
+    importlib.reload(s_pkg)
+    importlib.reload(e_sched)
+    importlib.reload(e_canv)
+    importlib.reload(e_run)
+    importlib.reload(e_pkg)
+    importlib.reload(c_pkg)
+
     if engine is not None:
-        # Re-bind updated methods
-        engine._parse_messages = engine_mod.ReflexEngine._parse_messages.__get__(engine, engine_mod.ReflexEngine)
-        engine._run_reflex = engine_mod.ReflexEngine._run_reflex.__get__(engine, engine_mod.ReflexEngine)
-        engine.generate = engine_mod.ReflexEngine.generate.__get__(engine, engine_mod.ReflexEngine)
-    return {"status": "success", "message": "Engine logic reloaded successfully"}
+        engine.scheduler = e_sched.DynamicStepScheduler(
+            default_generative_steps=engine.settings.GENERATIVE_STEPS,
+            default_generative_length=engine.settings.MAX_CANVAS_LENGTH,
+        )
+        engine._parse_messages = e_run.ReflexEngine._parse_messages.__get__(engine, e_run.ReflexEngine)
+        engine._run_reflex = e_run.ReflexEngine._run_reflex.__get__(engine, e_run.ReflexEngine)
+        engine._run_vanilla = e_run.ReflexEngine._run_vanilla.__get__(engine, e_run.ReflexEngine)
+        engine._unroll_generative_synthesis = e_run.ReflexEngine._unroll_generative_synthesis.__get__(engine, e_run.ReflexEngine)
+        engine.generate = e_run.ReflexEngine.generate.__get__(engine, e_run.ReflexEngine)
+    return {"status": "success", "message": "All schema & engine modules reloaded successfully"}
+
 
 
 def run_server():

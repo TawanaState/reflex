@@ -1,146 +1,101 @@
-## Project Reflex: Open-Source Serving & Public Release Packaging
+# TASK BRIEF: Tiered Adaptive Compute for Parametric Tool Calls & Schema-Aware Step Scheduling
 
-You are the **Lead ML Systems Engineer** tasked with preparing **Project Reflex** for open-source public release. The core research, Phase 0 probes, Step-1 logit extraction, LoRA weights (`models/reflex_lora_v1`), and conformal risk calibration are already validated and working in the repository.
+You are the **Lead ML Systems Engineer** on **Project Reflex**. The server and base hybrid runtime are operational. 
 
-Your objective is to turn this research codebase into a clean, reproducible, high-performance public repository that anyone with access to an NVIDIA GPU workstation (DGX, A100, H100, or modern 80GB+ VRAM machine) can clone, configure via `.env`, and launch as an **OpenAI-compatible inference server**.
+Your objective is to implement **Schema-Conditioned Low-Step Denoising**: an adaptive step scheduler that allocates compute dynamically based on parameter schema complexity. When a tool requires primitive arguments (integers, floats, enums, bounded choices), the engine must allocate a compact micro-canvas and execute only **1 to 4 denoising steps**, rather than burning 15–20 steps on predictable, low-entropy data. Full 15–20 step denoising must be strictly reserved for open-ended string generation and free-form code/text.
 
----
-
-### NON-NEGOTIABLE OPERATIONAL DIRECTIVES
-
-1. **Zero Mocking / Zero Fakes:**
-   * Never inject simulated sleep times, synthetic mock predictions, or fake metrics.
-   * All server endpoints, token reads, and tool dispatches must run through the actual PyTorch / Transformers model graph.
-2. **Preserve Validated Artifacts:**
-   * Do **NOT** delete, break, or overwrite existing working experiments (`experiments/`), dataset splits (`data/`), model weights (`models/reflex_lora_v1/`), or result JSONs (`results/` and `experiments/*.json`).
-3. **Patience, Research & Verification:**
-   * Before writing code, inspect existing files (`experiments/01_step1_real_spike.py`, `experiments/test_kv_retention_timing.py`, `train_reflex_lora.py`, and `PROPOSAL.md`).
-   * When integrating tools or OpenAI API schemas, follow official OpenAI API specs and PyTorch best practices.
-   * Run live end-to-end integration tests using the official `openai` Python SDK before declaring any task complete.
+You must build this with **clean modularization** so the engine is decoupled, readable, and trivial to unit test and debug.
 
 ---
 
-### ARCHITECTURAL REQUIREMENTS & DELIVERABLES
+### CORE ARCHITECTURAL PRINCIPLE: COMPUTE MATCHES ENTROPY
 
-#### 1. Environment Configuration (`.env` & `src/config.py`)
-Create a standardized `.env.example` and a strict settings loader (`src/config.py` using `pydantic-settings` or `python-dotenv`):
-* `DIFFUSION_GEMMA_PATH`: Path to local model directory or Hugging Face repo ID (e.g., `google/diffusiongemma-26b-it` or NVIDIA FP4/BF16 weights).
-* `REFLEX_LORA_PATH`: Path to the trained LoRA adapter (default: `models/reflex_lora_v1`).
-* `REFLEX_MODE`: Toggle runtime mode:
-  * `reflex`: The full hybrid runtime (sub-150ms Step-1 micro-canvas decision + conformal risk gate + conditional generative expansion).
-  * `vanilla`: Standard DiffusionGemma baseline (fixed multi-step canvas denoising, no early exit).
-* `HOST`: Server bind address (default: `0.0.0.0`).
-* `PORT`: Server port (default: `8000`).
-* `CONFORMAL_EPS`: Operational error tolerance for risk gating (default: `0.02`).
-* `DEVICE`: Target CUDA device (default: `cuda:0`).
-* `MAX_CANVAS_LENGTH`: Maximum generative expansion buffer length (default: `256`).
+1. **Tier 1: Atomic Action (No Args)**
+   * *Schema:* Tool with 0 required parameters.
+   * *Canvas:* Micro-control canvas ($L \le 8$).
+   * *Budget:* **1 forward pass** (~110ms) via Step-1 logit extraction.
+2. **Tier 2: Parametric Primitive (Ints, Floats, Enums, Bounded Identifiers)**
+   * *Schema:* Tool parameters are typed as `int`, `float`, `bool`, or `enum` (e.g., `set_volume(level: int)`, `transfer(amount: float, currency: enum)`).
+   * *Canvas:* Sized strictly to expected parameter footprint ($L \in [8, 24]$ tokens).
+   * *Budget:* **2 to 4 denoising steps** (~130–160ms total). Low-entropy primitives stabilize within 2–3 iterations over the warm prompt KV cache.
+3. **Tier 3: Open Generative Synthesis (Unbounded Strings / Code)**
+   * *Schema:* Tool parameters contain free-form text/strings (e.g., `send_email(body: str)`, `generate_sql(query: str)`).
+   * *Canvas:* Generative buffer ($L \in [64, 256]$ tokens).
+   * *Budget:* **12 to 20 denoising steps** (~350–500ms).
 
-#### 2. Dual-Mode Inference Engine (`src/engine.py`)
-Implement a unified runtime engine supporting both modes cleanly:
-* **Mode A (`vanilla`):**
-  * Standard diffusion pipeline: Ingests user prompt, causal encoder caches KV state, runs full 15–25 denoising steps on the generation canvas, and returns text.
-* **Mode B (`reflex`):**
-  * **Phase 1 (The Micro-Control Canvas):**
-    * Allocates a minimal 4-to-16 token canvas (`action: @ \n needs_args: @ \n risk: @`).
-    * Extracts candidate logits exclusively on the masked slots using `logprob_token_ids` in a single forward pass (~110ms).
-    * Evaluates the conformal risk gate ($p_{\text{target}} \ge 1 - \lambda^*$).
-  * **Fast-Path Exit:** If the selected action is atomic/discrete and passes the risk gate, halts at Step 1 and immediately returns the typed action object.
-  * **Phase 2 (Conditional Expansion):** If the selected action requires arguments or the query demands free-form text/reasoning, materializes an expanded generative canvas (64–256 tokens) and unrolls 10–20 denoising steps, reusing the cached prompt KV without re-encoding.
+---
 
-#### 3. Full Modality & Conversation Support
-* **Multi-Turn Context:** The causal encoder processes conversation history (`messages: [{"role": "user", ...}, {"role": "assistant", ...}]`) and retains prompt KV states across turns.
-* **Multimodal Vision:** Support base64 or URL image payloads inside the standard OpenAI message format:
-  ```json
-  {"role": "user", "content": [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]}
+### REFACTORING & MODULARIZATION PLAN
 
-    ```
+Refactor the execution pipeline into clean, single-responsibility modules under `src/`:
 
-Pass image tensors directly into DiffusionGemma’s vision encoder tower.
-
-* **Tool Calling / Function Routing:**
-* Accept standard OpenAI `tools: [{"type": "function", "function": {...}}]`.
-* The schema compiler (`src/canvas.py`) automatically maps candidate tool names to slot-constrained candidate tokens on the micro-control canvas.
-
-
-
-#### 4. OpenAI-Compatible API Server (`src/server.py`)
-
-Implement a FastAPI application exposing:
-
-* `GET /health` (System status, active GPU memory, loaded mode).
-* `GET /v1/models` (Returns model ID and active mode metadata).
-* `POST /v1/chat/completions`:
-* Full support for OpenAI request and response specifications.
-* When `reflex` mode executes an atomic tool reflex on Step 1, format the output as:
-```json
-{
-  "id": "chatcmpl-reflex-xyz",
-  "object": "chat.completion",
-  "created": 1789999999,
-  "model": "reflex-diffusiongemma",
-  "choices": [{
-    "index": 0,
-    "message": {
-      "role": "assistant",
-      "content": null,
-      "tool_calls": [{
-        "id": "call_123",
-        "type": "function",
-        "function": {"name": "target_tool_name", "arguments": "{}"}
-      }]
-    },
-    "finish_reason": "tool_calls"
-  }],
-  "usage": {"prompt_tokens": 128, "completion_tokens": 0, "total_tokens": 128},
-  "reflex_metadata": {
-    "execution_path": "FAST_PATH_STEP_1",
-    "latency_ms": 112.4,
-    "confidence": 0.982
-  }
-}
+```text
+src/
+├── config.py             # Environment & model runtime configs
+├── schema/
+│   ├── inspector.py      # Inspects tool JSON schemas and classifies into Tier 1, 2, or 3
+│   └── compiler.py       # Compiles schemas into canvas slot indices & candidate token sets
+├── engine/
+│   ├── scheduler.py      # Dynamic step allocator: maps Tier & entropy to optimal denoise steps
+│   ├── canvas.py         # Canvas memory allocation, mask indexing, and seeded templates
+│   └── runner.py         # Causal encoder pass, prompt KV retention, and bidirectional diffusion steps
+└── server.py             # FastAPI OpenAI-compatible routing (/v1/chat/completions)
 
 ```
 
+#### Detailed Deliverables
 
-* When generating open text, return standard `message: {"role": "assistant", "content": "..."}`.
+##### 1. `src/schema/inspector.py` (Schema Complexity Classifier)
 
+Implement `inspect_tool_schema(tool_def: dict) -> ToolComplexity`:
 
+* Traverses the tool's JSON schema `parameters.properties`.
+* If no properties $\rightarrow$ `Tier.ATOMIC` (Budget: 1 step).
+* If all required properties are `integer`, `number`, `boolean`, or `enum` $\rightarrow$ `Tier.PARAMETRIC_PRIMITIVE` (Budget: 2–4 steps, calculate max token length $L$).
+* If any property is an unconstrained `string` $\rightarrow$ `Tier.GENERATIVE_SYNTHESIS` (Budget: default full steps).
 
-#### 5. Verification & Test Suite (`tests/`)
+##### 2. `src/engine/scheduler.py` (Adaptive Step Allocator)
 
-Write standalone validation scripts that execute against the live server:
+Implement `DynamicStepScheduler`:
 
-* `tests/test_fast_path_reflex.py`: Sends single-turn discrete routing queries and asserts response time is $<150\text{ ms}$ with valid `tool_calls`.
-* `tests/test_generative_expansion.py`: Sends open-ended text and coding prompts, verifying valid multi-step text generation.
-* `tests/test_multimodal.py`: Sends an image + question payload, verifying the vision encoder functions without runtime crashes.
-* `tests/test_openai_client.py`: Verifies direct compatibility using the official `from openai import OpenAI` Python SDK.
+* Calculates execution plan: `(canvas_length, denoise_steps, candidate_mask)`.
+* For Tier 2 calls, sets `max_steps = 3` (or adaptive early stopping if argmax tokens stabilize across 2 consecutive steps).
+* Exposes clean debug logs: `[SCHEDULER] Tool: transfer | Tier: PRIMITIVE | Canvas: 16 | Steps: 3`.
 
-#### 6. Public Documentation & Presentation (`README.md`)
+##### 3. `src/engine/runner.py` (KV-Warmed Micro-Expansion)
 
-Write an executive, publication-grade `README.md` containing:
+Ensure the micro-argument canvas directly reuses the initial prompt KV cache:
 
-1. **Hero Overview:** Crisp explanation of Reflex—unifying sub-150ms discrete decision reflexes (System 1) with generative diffusion synthesis (System 2) in a single model.
-2. **Architectural Comparison Table:** Reflex vs. Monolithic AR LLMs vs. TypeSafe Jev vs. Two-Model Cascades.
-3. **Hardware Requirements & Prerequisites:** GPU memory guidelines (80GB+ VRAM recommendations for 26B/A4B checkpoint), CUDA drivers, Python version.
-4. **Quickstart Guide (5 Minutes to Run):**
-* Environment setup & dependency installation (`requirements.txt`).
-* `.env` file configuration.
-* One-line server launch command: `python -m src.server`.
-
-
-5. **Client Usage Examples:**
-* Python snippet using standard `openai` library for fast tool dispatch.
-* Python snippet using standard `openai` library for conversational generation.
-
-
-6. **Benchmark & Research Artifacts:** References to paper findings, latency scaling benchmarks, and Pareto plots.
+* Phase 1 resolves tool choice on Step 1.
+* If Tier 2, inject argument template (e.g., `amt: [ @ @ @ ] \n curr: [ @ ]`), allocate only the required slice, and run 2–3 reverse diffusion iterations.
+* Decode and validate extracted primitives against expected types (`int(val)`, `float(val)`).
 
 ---
 
-### EXECUTION STAGES
+### VERIFICATION & BENCHMARKING
 
-1. **Audit & Scaffolding:** Inspect existing files, create clean directory structure (`src/`, `tests/`, `configs/`).
-2. **Engine & Configuration:** Build `src/config.py`, `src/canvas.py`, and `src/engine.py` connecting the verified model pipeline to the dual-mode switch.
-3. **API Implementation:** Build `src/server.py` with FastAPI, handling JSON tool extraction, micro-canvas seeding, and OpenAI response formatting.
-4. **Testing & Validation:** Spin up the server locally on the GPU, execute the test suite, and record real stdout traces in `NOTES.md`.
-5. **Documentation & Polish:** Finalize `README.md`, `.env.example`, and `requirements.txt`.
+1. **Zero Mocking:** All execution must run on actual GPU weights through the diffusion graph. Do not simulate latency or fake step outputs.
+2. **Unit & Integration Tests (`tests/test_tiered_compute.py`):**
+* Test Tier 1 call (atomic routing): Verify completion in 1 step ($<130\text{ ms}$).
+* Test Tier 2 call (integer/float parameter tool): Verify completion in $\le 4$ steps ($<180\text{ ms}$) and verify argument parsing.
+* Test Tier 3 call (open string parameter tool): Verify full generative expansion and output validity.
+
+
+3. **Benchmark Script (`experiments/benchmark_tiered_latency.py`):**
+* Measure and compare:
+* Tier 1 Latency (p50/p95)
+* Tier 2 Latency (p50/p95) vs. Fixed 20-step baseline
+* Argument accuracy (% valid parsed primitives)
+
+
+* Save outputs to `experiments/tiered_latency_results.json`.
+
+
+
+---
+
+### OPERATIONAL DIRECTIVE
+
+1. Maintain `NOTES.md` continuously with implementation decisions, commands executed, and measured latency traces.
+2. Do not break existing server endpoints (`/v1/chat/completions`) or overwrite validated model weights (`models/reflex_lora_v1/`).
+3. Begin by creating `src/schema/inspector.py`, verify with a standalone test, and integrate into `src/engine/runner.py`.

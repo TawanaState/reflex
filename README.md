@@ -4,6 +4,8 @@
 
 **A Unified Control-First Serving Framework for Autonomous Agents & Tool Routing**
 
+[![Author](https://img.shields.io/badge/Author-Tawananyasha_Mukoriwo-black.svg?style=flat&logo=github)](https://github.com/TawanaState)
+[![Website](https://img.shields.io/badge/Website-tawananyasha.com-blue.svg)](https://tawananyasha.com)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.14%2Bcu130-EE4C2C.svg?logo=pytorch)](https://pytorch.org/)
 [![Model](https://img.shields.io/badge/Model-DiffusionGemma--26B--A4B--it-4285F4.svg?logo=google)](https://huggingface.co/google/diffusiongemma-26B-A4B-it)
@@ -13,6 +15,8 @@
 ---
 
 ### *Bridging Fast System-1 Decision Reflexes and Deep System-2 Generative Diffusion in a Single Weights Graph*
+
+**Built solely by [Tawananyasha Mukoriwo](https://tawananyasha.com) ([@TawanaState](https://github.com/TawanaState))**
 
 </div>
 
@@ -27,11 +31,10 @@ Existing state-of-the-art production deployments force these decisions through m
 2. **Syntactic Fragility:** JSON schema syntax errors occur intermittently under heavy load or low temperatures.
 3. **Escalation Penalty in Cascades:** Traditional two-model cascades (e.g., small classifier + large AR generator) suffer from domain mismatch, calibration divergence, and duplicate GPU memory footprints.
 
-**Project Reflex** introduces **Control-First Canvas Expansion** on Discrete Diffusion Language Models (`DiffusionGemma-26B-A4B-it`):
-* **Phase 1 (The Micro-Control Canvas):** The model evaluates a minimal 4-to-16 token decision canvas in a **single forward step** (76.8 ms KV-cached hit, 279.8 ms cold prefill).
-* **Conformal Risk Gating:** Evaluates split-conformal risk bounds ($\mathcal{P}(\text{error} \mid \text{exit}) \le \epsilon$), guaranteeing statistical bounds on false early exits without heuristic score hacking.
-* **Fast-Path Exit:** If the selected action is atomic and passes the risk threshold, the engine immediately halts at Step 1 and dispatches the typed tool call.
-* **Phase 2 (Conditional Expansion):** If free-form reasoning or argument synthesis is required, Reflex materializes an expanded generative canvas (64–256 tokens) and unrolls 10–20 reverse diffusion steps—**reusing the causal encoder prompt KV state directly in memory with 0 ms prompt re-computation penalty**.
+**Project Reflex** introduces **Control-First Canvas Expansion & Tiered Adaptive Compute** on Discrete Diffusion Language Models (`DiffusionGemma-26B-A4B-it`):
+* **Tier 1 (Atomic Tool Routing):** When discrete actions require zero arguments ($N_{args} = 0$), Reflex evaluates a minimal 4-to-16 token decision canvas in a **single forward step** (76.8 ms KV-cached hit, 279.8 ms cold prefill) and exits immediately via Conformal Risk Gating.
+* **Tier 2 (Parametric Primitive Infilling):** When a selected tool requires typed primitive arguments (`int`, `float`, `bool`, `enum`), Reflex compiles a structured micro-argument canvas ($L \in [8, 24]$ tokens) and unrolls **2 to 4 low-step denoising iterations** (<180 ms) with argmax convergence early-stopping.
+* **Tier 3 (Generative Synthesis):** When free-form natural language generation, unbounded reasoning, or code synthesis is required, Reflex materializes an expanded generative canvas (64–256 tokens) and unrolls 12–20 diffusion steps—**reusing the causal encoder prompt KV state directly in memory with 0 ms prompt re-computation penalty**.
 
 ---
 
@@ -40,7 +43,9 @@ Existing state-of-the-art production deployments force these decisions through m
 | Dimension | Monolithic AR LLM (`gemma4:12b`) | Fixed 20-Step Diffusion (`DiffusionGemma-26B`) | Two-Model Cascade (Classifier + AR) | **Project Reflex (Ours)** |
 | :--- | :---: | :---: | :---: | :---: |
 | **Model Graph** | Single Autoregressive | Single Discrete Diffusion | Separate Classifier + AR | **Unified Bidirectional Diffusion + LoRA** |
-| **Step-1 Fast Exit** | ❌ No (requires full decode) | ❌ No (fixed multi-step) | ⚠️ Partial (Classifier only) | **✅ Yes (Sub-150ms Micro-Canvas)** |
+| **Tier 1 (Atomic) Exit** | ❌ No (full token decode) | ❌ No (fixed multi-step) | ⚠️ Partial (Classifier only) | **✅ 1 Step (<130ms)** |
+| **Tier 2 (Primitive) Exit**| ❌ No (full JSON decode) | ❌ No (fixed multi-step) | ❌ No (full AR decode) | **✅ 2–4 Steps (<180ms Micro-Canvas)** |
+| **Tier 3 (Generative) Exit**| Full sequential decode | Fixed 20-Step Diffusion | AR LLM decode | **✅ Adaptive 12–20 Steps + KV Reuse** |
 | **p50 Latency (Routing)** | 856.1 ms | 5,293.5 ms | 528.0 ms | **76.8 ms (Hit) / 279.8 ms (Prefill)** |
 | **p95 Latency (Routing)** | 941.8 ms | 5,452.3 ms | 980.0 ms | **78.1 ms (Hit) / 315.0 ms (Prefill)** |
 | **Speedup vs AR** | 1.00x | 0.18x | 1.65x | **11.5x (Hit) / 3.4x (End-to-End)** |
@@ -175,8 +180,52 @@ print(f"Execution Path: {response.reflex_metadata['execution_path']}")  # 'FAST_
 print(f"Total Latency: {response.reflex_metadata['latency_ms']:.1f} ms")  # < 150 ms
 ```
 
-### Example B: Conversational & Generative Expansion
-When answering open-ended queries or coding prompts, Reflex conditionally unrolls Phase 2 generative diffusion:
+### Example B: Sub-180ms Parametric Tool Infilling (Tier 2)
+When a tool requires primitive arguments (`int`, `float`, `bool`, `enum`), Reflex compiles a 16-token micro-argument canvas and resolves the arguments in 2–4 diffusion steps with argmax convergence early-stopping.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8090/v1",
+    api_key="reflex-local",
+)
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "set_thermostat",
+            "description": "Adjusts temperature and operating mode",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "temperature": {"type": "integer"},
+                    "mode": {"type": "string", "enum": ["eco", "heat", "cool"]},
+                },
+                "required": ["temperature", "mode"],
+            },
+        },
+    }
+]
+
+response = client.chat.completions.create(
+    model="reflex-diffusiongemma",
+    messages=[{"role": "user", "content": "Set thermostat to 72 in heat mode"}],
+    tools=tools,
+)
+
+choice = response.choices[0]
+tool_call = choice.message.tool_calls[0]
+print(f"Tool Selected: {tool_call.function.name}")  # 'set_thermostat'
+print(f"Arguments: {tool_call.function.arguments}")  # '{"temperature": 72, "mode": "heat"}'
+print(f"Compute Tier: {response.reflex_metadata['tier']}")  # 'PARAMETRIC_PRIMITIVE'
+print(f"Steps Executed: {response.reflex_metadata['steps_executed']}")  # 2-4 steps
+print(f"Total Latency: {response.reflex_metadata['latency_ms']:.1f} ms")  # < 180 ms
+```
+
+### Example C: Conversational & Generative Expansion (Tier 3)
+When answering open-ended queries or coding prompts, Reflex conditionally unrolls Phase 2 generative diffusion (12–20 steps):
 
 ```python
 from openai import OpenAI
@@ -198,10 +247,11 @@ choice = response.choices[0]
 print(f"Finish Reason: {choice.finish_reason}")  # 'stop'
 print(f"Generated Output:\n{choice.message.content}")
 print(f"Execution Path: {response.reflex_metadata['execution_path']}")  # 'EXPANDED_GENERATIVE_PATH'
+print(f"Compute Tier: {response.reflex_metadata['tier']}")  # 'GENERATIVE_SYNTHESIS'
 print(f"Steps Executed: {response.reflex_metadata['steps_executed']}")  # 21 steps
 ```
 
-### Example C: Multimodal Vision Payloads
+### Example D: Multimodal Vision Payloads
 Reflex natively routes image tensors into DiffusionGemma's vision encoder tower:
 
 ```python
@@ -264,33 +314,52 @@ reflex/
 ├── src/
 │   ├── __init__.py
 │   ├── config.py                     # Pydantic settings & .env loader
-│   ├── canvas.py                     # Micro-control canvas & tool schema compiler
+│   ├── canvas.py                     # Backward-compatibility bridge for canvas & schema
 │   ├── risk_gate.py                  # Conformal Risk Gate (Angelopoulos et al.)
 │   ├── expansion.py                  # Canvas Expansion Manager with KV reuse
-│   ├── engine.py                     # Dual-mode unified inference engine
+│   ├── schema/                       # Schema inspection & canvas compilation
+│   │   ├── inspector.py              # Parameter inspector & tier classification
+│   │   └── compiler.py               # Micro-argument canvas compiler (L ∈ [8, 24])
+│   ├── engine/                       # Unified tiered execution engine
+│   │   ├── runner.py                 # ReflexEngine runtime with tiered fast-paths
+│   │   ├── scheduler.py              # DynamicStepScheduler (entropy & complexity aware)
+│   │   └── canvas.py                 # Tool schema & prompt formatting utilities
 │   └── server.py                     # OpenAI-compatible FastAPI server
 ├── tests/
 │   ├── test_canvas.py                # Canvas compiler unit tests
 │   ├── test_risk_gate.py             # Conformal risk gate unit tests
 │   ├── test_fast_path_reflex.py      # Sub-150ms fast-path integration test
 │   ├── test_generative_expansion.py  # Phase 2 multi-step generation test
+│   ├── test_tiered_compute.py        # Tier 1, Tier 2, and Tier 3 validation tests
 │   ├── test_multimodal.py            # Vision encoder integration test
 │   └── test_openai_client.py         # Official openai Python SDK client test
-└── experiments/                      # Phase 0 probes, LoRA training, & Pareto suite
+└── experiments/                      # Benchmarks, probes, LoRA training, & Pareto suite
+    ├── benchmark_tiered_latency.py   # Latency & accuracy benchmark across compute tiers
+    └── ...
 ```
 
 ---
 
-## 8. License & Citation
+## 8. Author & Maintainer
+
+Project Reflex was conceived, researched, and engineered solely by **Tawananyasha Mukoriwo** (independent researcher, no external team).
+
+* **Personal Website:** [tawananyasha.com](https://tawananyasha.com) (contact details, portfolio, and research writing)
+* **GitHub:** [@TawanaState](https://github.com/TawanaState)
+
+---
+
+## 9. License & Citation
 
 Project Reflex is released under the **Apache 2.0 License**.
 
 ```bibtex
 @article{reflex2026,
   title   = {Project Reflex: Sub-150ms Discrete Decision Reflexes on Discrete Diffusion Models},
-  author  = {Tawana and the Reflex Research Team},
+  author  = {Mukoriwo, Tawananyasha},
   year    = {2026},
-  journal = {arXiv preprint}
+  journal = {arXiv preprint},
+  url     = {https://tawananyasha.com}
 }
 ```
 

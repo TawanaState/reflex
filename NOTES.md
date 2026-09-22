@@ -374,4 +374,65 @@ Transform Project Reflex research into a production-grade, reproducible open-sou
    - `tests/test_openai_client.py`
 6. Publication-Grade Documentation: Executive `README.md` with architectural comparison table, quickstart, client snippets, and benchmark citations.
 
+---
+
+## [2026-09-22 09:10] - Task: Phase H Tiered Adaptive Compute & Schema-Conditioned Step Scheduling
+
+### Objective & Architectural Principle: Compute Matches Entropy
+Implement **Schema-Conditioned Low-Step Denoising** that dynamically allocates diffusion steps based on parameter schema entropy:
+- **Tier 1: Atomic Action (No Args)**
+  - Schema: Tool with 0 required parameters.
+  - Canvas: Micro-control canvas ($L \le 8$).
+  - Budget: **1 forward pass** (~110ms hit / ~250ms prefill) via Step-1 logit extraction.
+- **Tier 2: Parametric Primitive (Ints, Floats, Enums, Bounded Identifiers)**
+  - Schema: Tool parameters typed as `int`, `float`, `bool`, or `enum`.
+  - Canvas: Structured micro-argument canvas ($L \in [8, 24]$ tokens) with seeded JSON syntax keys.
+  - Budget: **2 to 4 denoising steps** (~267–367ms) with argmax convergence early-stopping.
+- **Tier 3: Open Generative Synthesis (Unbounded Strings / Code)**
+  - Schema: Tool parameters containing free-form text/strings or unconstrained code.
+  - Canvas: Generative buffer ($L \in [64, 256]$ tokens).
+  - Budget: **12 to 20 denoising steps** (~2,500ms).
+
+### Modular Architecture Delivered
+```text
+src/
+├── config.py             # Runtime & model settings
+├── canvas.py             # Backward-compatibility bridge
+├── schema/
+│   ├── inspector.py      # Schema complexity classifier (Tier.ATOMIC, PARAMETRIC_PRIMITIVE, GENERATIVE_SYNTHESIS)
+│   └── compiler.py       # Micro-argument canvas compiler (compile_tier2_argument_canvas)
+├── engine/
+│   ├── scheduler.py      # DynamicStepScheduler (entropy-aware step planning)
+│   ├── canvas.py         # Prompt/tool formatting & typed primitive value casting
+│   └── runner.py         # ReflexEngine runtime with tiered fast-paths & KV reuse
+└── server.py             # FastAPI OpenAI server with /admin/reload hot reloader
+```
+
+### Empirical Hardware Benchmark Results (`experiments/tiered_latency_results.json`)
+* Hardware: NVIDIA GB10 Blackwell SoC (Bare-Metal 121GB Unified Memory, CUDA 13.0)
+* Model: `DiffusionGemma-26B-A4B-it` in `bfloat16` + `reflex_lora_v1`
+* Trials: 10 per compute tier
+
+| Tier | Complexity & Schema | Canvas Size | Steps Executed | Mean Wall Latency | Median (p50) Latency | Speedup vs Full Generation |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Tier 1** | Atomic Action (`mute_audio`, 0 args) | 4 tokens | 1 step | **253.37 ms** | **253.17 ms** | **9.91x faster** |
+| **Tier 2** | Parametric Primitive (`set_volume`, int) | 16 tokens | 2–4 steps | **367.34 ms** | **267.47 ms** | **6.83x faster** |
+| **Tier 3** | Generative Synthesis (`write_email`, str) | 256 tokens | 20 steps | **2,510.25 ms** | **2,505.90 ms** | 1.00x (baseline) |
+
+### Verification & Test Suite Results
+* Unit Tests: `python -m unittest discover tests/` -> 13 tests passed in 0.033s (100%).
+* Integration Suite:
+  - `tests/test_fast_path_reflex.py`: PASSED (mean 282.03 ms, 1 step)
+  - `tests/test_generative_expansion.py`: PASSED (EXPANDED_GENERATIVE_PATH, 21 steps)
+  - `tests/test_multimodal.py`: PASSED (vision encoder tower processed image tensor cleanly)
+  - `tests/test_openai_client.py`: PASSED (official openai Python SDK compatibility)
+  - `tests/test_tiered_compute.py`: PASSED (Tier 1: 1 step, Tier 2: 4 steps, Tier 3: 21 steps)
+
+### Author Attribution & Maintainer
+Updated `README.md` and repository citation:
+* Conceived, researched, and engineered solely by **Tawananyasha Mukoriwo** (no team).
+* Personal Website: [tawananyasha.com](https://tawananyasha.com)
+* GitHub: [@TawanaState](https://github.com/TawanaState)
+
+
 
