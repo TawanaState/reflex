@@ -32,7 +32,7 @@ class ParameterSpec:
 
     @property
     def is_primitive(self) -> bool:
-        """Returns True if the parameter represents a bounded low-entropy primitive."""
+        """Returns True for scalar types supported by the primitive validator."""
         if self.type in ("integer", "int", "number", "float", "boolean", "bool"):
             return True
         if self.type == "string" and self.enum_values is not None and len(self.enum_values) > 0:

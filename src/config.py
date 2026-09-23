@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # on an independent held-out set; confidence is therefore reported as 0.
     REFLEX_ATOMIC_EARLY_EXIT: bool = Field(default=True)
     REFLEX_ATOMIC_STABLE_STEPS: int = Field(default=1, ge=1)
+    # Experimental: only fully specified typed-scalar calls are eligible.
+    REFLEX_SCALAR_EARLY_EXIT: bool = Field(default=False)
+    REFLEX_SCALAR_STABLE_STEPS: int = Field(default=2, ge=1)
 
     # Server binding
     HOST: str = Field(

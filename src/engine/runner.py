@@ -26,7 +26,7 @@ from transformers import AutoProcessor, AutoTokenizer, DiffusionGemmaForBlockDif
 
 from ..config import Settings, get_settings
 from ..schema.inspector import Tier, inspect_tool_schema
-from .early_exit import AtomicToolReady, NativeDraftObserver
+from .early_exit import NativeToolReady, NativeDraftObserver
 from .native_tool_calling import (
     build_native_tools,
     parse_gemma_tool_call,
@@ -349,24 +349,32 @@ class ReflexEngine:
         # compute; measured completion_tokens showed this had NO effect below
         # one block (still 256 tokens generated either way), so it has been
         # removed rather than left in as a fake optimization. The full path
-        # retains the official sampler's entropy-based stopping. Reflex adds a
-        # stricter first-draft exit only for complete argument-free calls.
+        # retains the official sampler's entropy-based stopping. Reflex adds
+        # draft exits for complete atomic calls and, when explicitly enabled,
+        # stable fully specified bounded-scalar calls.
         canvas_length = getattr(self.model.config, "canvas_length", 256)
         gen_budget = min(max_tokens, canvas_length) if max_tokens else canvas_length
 
         tensor_inputs = self._build_native_chat_inputs(parsed_messages, images, tools)
         prompt_len = tensor_inputs["input_ids"].shape[1]
 
+        profiles = {name: inspect_tool_schema(tool) for name, tool in tool_by_name.items()}
         atomic_names = {
-            name for name, tool in tool_by_name.items()
-            if inspect_tool_schema(tool).tier == Tier.ATOMIC
-        }
+            name for name, profile in profiles.items() if profile.tier == Tier.ATOMIC
+        } if self.settings.REFLEX_ATOMIC_EARLY_EXIT else set()
+        scalar_profiles = {
+            name: profile for name, profile in profiles.items()
+            if profile.tier == Tier.PARAMETRIC_PRIMITIVE
+            and profile.parameters
+            and all(spec.is_primitive for spec in profile.parameters.values())
+        } if self.settings.REFLEX_SCALAR_EARLY_EXIT else {}
         observer = NativeDraftObserver(
             tokenizer=self.tokenizer,
             atomic_names=atomic_names,
             stable_steps_required=self.settings.REFLEX_ATOMIC_STABLE_STEPS,
-            enable_exit=self.settings.REFLEX_ATOMIC_EARLY_EXIT,
-        ) if atomic_names and self.settings.REFLEX_ATOMIC_EARLY_EXIT else None
+            scalar_profiles=scalar_profiles,
+            scalar_stable_steps_required=self.settings.REFLEX_SCALAR_STABLE_STEPS,
+        ) if atomic_names or scalar_profiles else None
 
         with torch.inference_mode():
             generation_kwargs = {k: v for k, v in tensor_inputs.items() if k not in ("input_ids", "attention_mask")}
@@ -378,22 +386,39 @@ class ReflexEngine:
                     streamer=observer,
                     **generation_kwargs,
                 )
-            except AtomicToolReady:
-                if observer is None or observer.accepted_name not in atomic_names:
+            except NativeToolReady:
+                if observer is None or observer.accepted_name not in tool_by_name:
                     raise
                 name = observer.accepted_name
+                if observer.accepted_kind == "atomic":
+                    if name not in atomic_names or observer.accepted_arguments != {}:
+                        raise
+                    accepted_args = {}
+                    path = "NATIVE_ATOMIC_EARLY_EXIT"
+                    tier = Tier.ATOMIC.value
+                elif observer.accepted_kind == "scalar":
+                    profile = scalar_profiles.get(name)
+                    if profile is None or observer.accepted_arguments is None:
+                        raise
+                    accepted_args = validate_and_cast_call_args(observer.accepted_arguments, profile)
+                    if accepted_args is None or set(accepted_args) != set(profile.parameters):
+                        raise
+                    path = "NATIVE_SCALAR_EARLY_EXIT"
+                    tier = Tier.PARAMETRIC_PRIMITIVE.value
+                else:
+                    raise
                 return EngineOutput(
                     content=None,
                     tool_calls=[{
                         "id": f"call_{uuid.uuid4().hex[:8]}",
                         "type": "function",
-                        "function": {"name": name, "arguments": "{}"},
+                        "function": {"name": name, "arguments": json.dumps(accepted_args)},
                     }],
                     finish_reason="tool_calls",
-                    execution_path="NATIVE_ATOMIC_EARLY_EXIT",
-                    tier=Tier.ATOMIC.value,
+                    execution_path=path,
+                    tier=tier,
                     latency_ms=(time.perf_counter() - t0) * 1000.0,
-                    # Draft stability has not been calibrated as a probability.
+                    # Draft stability is not a calibrated probability.
                     confidence=0.0,
                     steps_executed=observer.step,
                     prompt_tokens=prompt_len,

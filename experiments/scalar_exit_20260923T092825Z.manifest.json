@@ -1,0 +1,44 @@
+{
+  "run_id": "20260923T092825Z",
+  "input": "/home/tawana/research/reflex/data/bfcl/scalar_eval.jsonl",
+  "input_sha256": "2b57a60bea8e04b1948b59e517c4485adb4364c6921de2115f07725012bff4bc",
+  "rows": 214,
+  "git_commit": "a45ac2dbe77dc6b56cc524ca9479721412b5951a",
+  "benchmark_script_sha256": "3352ab862b8bac0a6696293cc3344c11c191dab4dcf07b1ad04c8bc983b3e2f7",
+  "observer_sha256": "29a08fa7ca80b3b7e6f9c541c7d374af3afed58b3fb53c84078b5dc398a3e342",
+  "runner_sha256": "3708ce7042efa7787cdf501ea21cdf73f9eb1448eb56d411f7319b967c426f6d",
+  "torch": "2.14.0+cu130",
+  "transformers": "5.17.0",
+  "gpu": "NVIDIA GB10",
+  "model_path": "/home/tawana/.cache/huggingface/hub/models--google--diffusiongemma-26B-A4B-it/snapshots/f7f5b7f5fa82ffc52addd066915886d497f5517b",
+  "lora_loaded": false,
+  "canvas_length": 256,
+  "max_new_tokens": 256,
+  "seed": 20260924,
+  "policies": {
+    "official": [
+      false,
+      false,
+      2
+    ],
+    "atomic_only": [
+      true,
+      false,
+      2
+    ],
+    "scalar_1": [
+      true,
+      true,
+      1
+    ],
+    "scalar_2": [
+      true,
+      true,
+      2
+    ]
+  },
+  "scalar_1_scope": "scalar positives and scalar-distractor no-tool negatives only",
+  "warmup": "first input under each policy, excluded",
+  "timing": "CUDA-synchronized end-to-end wall time, includes prompt and output processing",
+  "score": "strict field alternatives / no executable call, not BFCL official AST score"
+}

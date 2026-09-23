@@ -15,7 +15,7 @@ This replaces an earlier architecture (see [RESULTS.md](RESULTS.md) and `NOTES.m
 | Path | Current implementation | What still needs proof |
 | --- | --- | --- |
 | Atomic (no args) | Exit on the first complete native draft when the selected name is an offered zero-argument schema | More atomic positives and irrelevant atomic distractors for risk calibration; the matched A/B is complete. |
-| Primitive args (numeric/enum/bool) | Continue the official sampler, parse native arguments, then validate against the selected schema | Official BFCL AST scoring instead of the current loose containment check. |
+| Primitive args (numeric/enum/bool) | Continue the official sampler; an experimental, disabled-by-default draft-stability early exit was measured and did not clear its own bar at the shipped setting (see below) | Official BFCL AST scoring instead of the current loose containment check; a larger calibration set before any scalar-exit default change. |
 | Free-text / nested-object args | Continue the same sampler with the full block and fail-closed schema validation | The model sometimes answers directly or emits invalid required fields; frequency and mitigation remain open. |
 
 ## Evidence status
@@ -31,6 +31,8 @@ An earlier, unmatched held-out atomic evaluation on 2026-09-23 returned the corr
 A deterministic 52+52 held-out probe measured increasing work with output complexity. Atomic-bucket calls used **1.04 mean steps / 697 ms**; primitive calls used **2.96 / 1,490 ms** (50/52 tool names, 40/52 loose full arguments); free-text/nested calls used **3.65 / 1,627 ms** (45/52 names, 33/52 loose full arguments). None of the 104 non-atomic requests exited through the atomic gate. The full 1,051-item evaluation remains the largest routing result; its argument score is loose rather than an official BFCL score.
 
 **Limits:** the gate checks native call syntax and schema, not tool relevance. It has no calibrated correctness probability. Open-ended generation quality, GPU kernel time, energy, and multimodal quality were not measured in the paired run. The old loose argument-match check can overcount or undercount correctness; the new strict-field score is transparent but is still not the official BFCL AST score. [RESULTS.md](RESULTS.md) separates the current matched result from historical v1/v2 probes.
+
+An experimental extension of the same draft-observer mechanism to fully specified typed-scalar calls (`REFLEX_SCALAR_EARLY_EXIT`, disabled by default) was measured on a matched, 214-request, four-policy interleaved run. At its shipped two-stable-draft setting it produced **no statistically reliable speedup** anywhere in the workload (overall +10.8 ms, 95% CI crossing zero); a one-draft ablation did show a real 14.4% mean latency reduction on true scalar positives with zero output regressions, but with only 58 positive and 100 negative examples this does not bound its false-exit risk, and its wrong-exit rate matched the two-draft setting exactly. The flag stays off by default. See [SCALAR_EXPERIMENT.md](SCALAR_EXPERIMENT.md) and [RESULTS.md](RESULTS.md#matched-scalar-early-exit-extension-2026-09-23) for the full breakdown, raw trace, and figure.
 
 ## Run locally
 
@@ -62,6 +64,7 @@ Responses include `reflex_metadata` with execution path, tier, engine time, and 
 The current same-model A/B method, frozen BFCL workload, scorer, and limits are in [BENCHMARK.md](BENCHMARK.md). The paired trace and measured results are reported in [RESULTS.md](RESULTS.md).
 
 - `python scripts/prepare_paired_eval.py` rebuilds the 500-request stratified paired workload from pinned BFCL sources. `python experiments/benchmark_paired_bfcl.py --ablate-atomic` runs both policies through one loaded model; `python experiments/summarize_paired_bfcl.py experiments/paired_bfcl_<run-id>.jsonl` summarizes complete pairs.
+- `python scripts/prepare_scalar_eval.py` rebuilds the 214-request scalar-exit workload; `python experiments/benchmark_scalar_early_exit.py` runs the four interleaved policies (`SCALAR_EXPERIMENT.md`); `python experiments/summarize_scalar_early_exit.py experiments/scalar_exit_<run-id>.jsonl` and `python experiments/plot_scalar_early_exit.py experiments/scalar_exit_<run-id>.summary.json` summarize and plot it.
 - `python scripts/prepare_bfcl_live_eval.py` rebuilds the 1,051-row held-out routing set from BFCL `live_multiple`, with provenance and overlap-checking against `data/bfcl/{train,cal,test}.jsonl`.
 - `python experiments/eval_native_tool_calling.py --skip-lora` reruns the full routing + argument-accuracy evaluation (both candidate-order conditions) against the base model.
 - `python experiments/eval_atomic_early_exit.py` evaluates every held-out atomic example against a running server; `python experiments/eval_tiered_adaptive_compute.py` records steps, latency, and correctness across primitive and free-text samples.
