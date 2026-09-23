@@ -1,0 +1,19 @@
+{
+  "source_revision": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8",
+  "live_eval_source": "data/bfcl/live_eval.jsonl",
+  "live_eval_sha256": "df8ea1315f7589107b6075b413534687880d3c9a19f9f58431c2664198144e73",
+  "irrelevance_source_url": "https://raw.githubusercontent.com/ShishirPatil/gorilla/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_irrelevance.json",
+  "irrelevance_raw_sha256": "2b6ed4c2e992cdcf5f1678a701851f944bef7550ee026ed1ddb89efed5be01a6",
+  "live_irrelevance_source_url": "https://raw.githubusercontent.com/ShishirPatil/gorilla/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_live_irrelevance.json",
+  "live_irrelevance_raw_sha256": "6559fda2beaceb609a2cd2e504c65b4a56cb448e1ef88fddfd199e163d163349",
+  "selection": "all 25 atomic, 52 freetext, and 43 live no-tool with atomic distractors; seeded sample of 303 primitive and 77 nonlive no-tool; seed 23; shuffled seed 2309",
+  "no_tool_label": "BFCL_v4_irrelevance and BFCL_v4_live_irrelevance categories (no applicable offered tool)",
+  "counts": {
+    "primitive": 303,
+    "freetext": 52,
+    "atomic": 25,
+    "no_tool": 120
+  },
+  "sha256": "7b9ec9725887fb9952aaf8cdb2269650ff2fe1ae058f7220548266b18afa3a5e",
+  "limitations": "Diagnostic stratified workload; no official BFCL aggregate; only 24 of 25 empty-gold calls have truly empty schemas."
+}

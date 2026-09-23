@@ -596,7 +596,7 @@ After the restart, re-ran all four smoke-test cases as real HTTP requests agains
 
 ---
 
-## [2026-09-23] Native draft early exit: first working TReflex transition
+## [2026-09-23] Native draft early exit: first working Reflex transition
 
 Implemented `src/engine/early_exit.py::NativeDraftObserver` and wired it into `ReflexEngine._run_reflex`. DiffusionGemma's public streamer hook receives the argmax canvas after every official denoising forward. The observer raises an internal control signal only when a draft contains exactly one complete, parseable native tool call, the named tool is in the offered menu, its parsed arguments are `{}`, and schema inspection classifies it as `ATOMIC`. Calls with arguments, incomplete/malformed calls, unknown names, and direct responses remain on the official generation path. The gate therefore changes decoder-step allocation without reviving the failed unused-token micro-canvas or adding a second classifier model.
 
@@ -607,3 +607,14 @@ A deterministic 52-primitive + 52-free-text held-out allocation probe (`experime
 Corrected `_estimate_forward_passes`: Hugging Face defines `tokens_per_forward` using non-pad generated tokens, while the old code divided the padded 256-slot canvas width by that ratio. This inflated reported step counts (for example 28 instead of 2). The server was hot-reloaded and the corrected live smoke trace `experiments/tiered_latency_traces_20260923T072121Z.jsonl` reports atomic=1 step, primitive=2, and one failed generative email attempt=9. The generative failure is retained as evidence of the known variance; the gate did not touch that path.
 
 The default `REFLEX_ATOMIC_STABLE_STEPS` is now 1, supported by the 25/25 held-out atomic result. This is a narrow syntactic/schema gate, not a calibrated confidence probability. The next paper-facing experiment is a larger atomic set split into calibration/test plus an interleaved early-exit-on/off comparison.
+
+## [2026-09-23] Matched 500-request DiffusionGemma vs Reflex benchmark
+
+The historical 25-item comparison used separate runs, so we froze a 500-row BFCL-derived workload and ran the official sampler and Reflex's one-draft gate through the same loaded BF16 checkpoint on the local GB10. `BENCHMARK.md` records source revision, overlap filtering, exact scoring, timing, and analysis. The raw 1,050-row trace (500 base, 500 one-draft, and 25 each at two/three drafts), manifest, summary, and figure are under `experiments/paired_bfcl_20260923T080412Z.*`.
+
+- Empty-argument positives: 25/25 strict calls in both arms, 24 early exits; mean wall latency 979.3 ms base vs 701.9 ms Reflex, a paired 277.4 ms saving (cluster-bootstrap 95% interval 247.6–294.5 ms).
+- Selected 500-request mix: 396/500 task-specific outcomes in both arms and 500/500 matched returned tool names, arguments, and assistant text. Mean wall latency 1966.4 ms base vs 1957.5 ms Reflex, 8.9 ms paired saving (95% interval -12.5 to +23.0 ms). No reliable mixed-workload improvement established.
+- Four of 43 live no-tool requests with atomic distractors exited early on a wrong tool. The official sampler made the identical wrong choice in each case; this is zero paired degradation but a real absolute error and no evidence of relevance-aware gating.
+- One/two/three-draft stability on the 25 positives: 702/976/977 ms mean; the official sampler was 979 ms. The extra stability steps erased almost all benefit. Negative cases were not ablated, so this is not a calibration curve.
+
+The new strict-field metric is not the official BFCL AST score, the no-tool metric does not grade text quality, and only 25 held-out atomic positives were available. GPU kernel time, energy, and multimodal quality were not measured. The research verdict in `RESULTS.md` now distinguishes a reproducible narrow fast path from the missing evidence for a paper claim. The serving gate was left at its one-draft setting; no optimization was added without a second matched evaluation.

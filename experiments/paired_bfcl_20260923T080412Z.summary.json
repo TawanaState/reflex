@@ -1,0 +1,386 @@
+{
+  "complete_pairs": 500,
+  "groups": {
+    "overall": {
+      "n": 500,
+      "matching_content_and_call": 500,
+      "base": {
+        "accuracy": 0.792,
+        "name_accuracy": 0.9447368421052632,
+        "mean_ms": 1966.3945070200716,
+        "p50_ms": 1403.5856454975146,
+        "p95_ms": 5710.123980298522,
+        "mean_forward_estimate": 4.666,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 379,
+          "NATIVE_DIRECT_RESPONSE": 119,
+          "ARGUMENT_VALIDATION_FAILED": 2
+        }
+      },
+      "reflex_1": {
+        "accuracy": 0.792,
+        "name_accuracy": 0.9447368421052632,
+        "mean_ms": 1957.4844183860405,
+        "p50_ms": 1403.778499501641,
+        "p95_ms": 5676.646836949295,
+        "mean_forward_estimate": 4.61,
+        "early_exits": 28,
+        "early_exits_correct": 24,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 351,
+          "NATIVE_ATOMIC_EARLY_EXIT": 28,
+          "NATIVE_DIRECT_RESPONSE": 119,
+          "ARGUMENT_VALIDATION_FAILED": 2
+        }
+      },
+      "paired_mean_saved_ms": 8.910088634031126,
+      "paired_median_saved_ms": 1.210006001201691,
+      "paired_saved_ms_iqr": [
+        -7.71675500436686,
+        11.462988000857877
+      ],
+      "both_correct_n": 396,
+      "both_correct_mean_saved_ms": 8.838241696984635,
+      "paired_mean_saved_ms_ci95": [
+        -12.524501161142672,
+        23.0404372988822
+      ],
+      "relative_mean_latency_reduction": 0.004531180595868181,
+      "accuracy_delta": 0,
+      "accuracy_delta_ci95": null,
+      "accuracy_delta_interval_note": "All observed paired accuracy differences are zero; a resampling interval would be degenerate and is not a risk bound",
+      "improved": 0,
+      "regressed": 0
+    },
+    "primitive": {
+      "n": 303,
+      "matching_content_and_call": 303,
+      "base": {
+        "accuracy": 0.7821782178217822,
+        "name_accuracy": 0.9504950495049505,
+        "mean_ms": 1390.5424994324133,
+        "p50_ms": 1348.830208000436,
+        "p95_ms": 2096.4382355989073,
+        "mean_forward_estimate": 2.854785478547855,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 292,
+          "NATIVE_DIRECT_RESPONSE": 9,
+          "ARGUMENT_VALIDATION_FAILED": 2
+        }
+      },
+      "reflex_1": {
+        "accuracy": 0.7821782178217822,
+        "name_accuracy": 0.9504950495049505,
+        "mean_ms": 1386.8270241353566,
+        "p50_ms": 1353.7491769966437,
+        "p95_ms": 2080.9729879969377,
+        "mean_forward_estimate": 2.854785478547855,
+        "early_exits": 0,
+        "early_exits_correct": 0,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 292,
+          "NATIVE_DIRECT_RESPONSE": 9,
+          "ARGUMENT_VALIDATION_FAILED": 2
+        }
+      },
+      "paired_mean_saved_ms": 3.7154752970567486,
+      "paired_median_saved_ms": 0.5583510064752772,
+      "paired_saved_ms_iqr": [
+        -6.516364501294447,
+        6.881035998958396
+      ],
+      "both_correct_n": 237,
+      "both_correct_mean_saved_ms": 3.994760548554455,
+      "paired_mean_saved_ms_ci95": [
+        0.12142558429365967,
+        8.590207691465093
+      ],
+      "relative_mean_latency_reduction": 0.002671960978232106,
+      "accuracy_delta": 0,
+      "accuracy_delta_ci95": null,
+      "accuracy_delta_interval_note": "All observed paired accuracy differences are zero; a resampling interval would be degenerate and is not a risk bound",
+      "improved": 0,
+      "regressed": 0
+    },
+    "freetext": {
+      "n": 52,
+      "matching_content_and_call": 52,
+      "base": {
+        "accuracy": 0.5576923076923077,
+        "name_accuracy": 0.8846153846153846,
+        "mean_ms": 1585.3973571344027,
+        "p50_ms": 1408.4680984997249,
+        "p95_ms": 2986.7950002524594,
+        "mean_forward_estimate": 3.5576923076923075,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 47,
+          "NATIVE_DIRECT_RESPONSE": 5
+        }
+      },
+      "reflex_1": {
+        "accuracy": 0.5576923076923077,
+        "name_accuracy": 0.8846153846153846,
+        "mean_ms": 1591.707467442085,
+        "p50_ms": 1408.4176310025214,
+        "p95_ms": 2990.1159816483414,
+        "mean_forward_estimate": 3.5576923076923075,
+        "early_exits": 0,
+        "early_exits_correct": 0,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 47,
+          "NATIVE_DIRECT_RESPONSE": 5
+        }
+      },
+      "paired_mean_saved_ms": -6.310110307682548,
+      "paired_median_saved_ms": -1.228389999596402,
+      "paired_saved_ms_iqr": [
+        -11.876947994096554,
+        6.532904748382862
+      ],
+      "both_correct_n": 29,
+      "both_correct_mean_saved_ms": -2.1341425178026587,
+      "paired_mean_saved_ms_ci95": [
+        -13.872813840598095,
+        -0.3570444516375299
+      ],
+      "relative_mean_latency_reduction": -0.003980144333713308,
+      "accuracy_delta": 0,
+      "accuracy_delta_ci95": null,
+      "accuracy_delta_interval_note": "All observed paired accuracy differences are zero; a resampling interval would be degenerate and is not a risk bound",
+      "improved": 0,
+      "regressed": 0
+    },
+    "atomic": {
+      "n": 25,
+      "matching_content_and_call": 25,
+      "base": {
+        "accuracy": 1.0,
+        "name_accuracy": 1.0,
+        "mean_ms": 979.3002420396078,
+        "p50_ms": 1002.2965149983065,
+        "p95_ms": 1084.7677256009774,
+        "mean_forward_estimate": 2,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 25
+        }
+      },
+      "reflex_1": {
+        "accuracy": 1.0,
+        "name_accuracy": 1.0,
+        "mean_ms": 701.9460150392842,
+        "p50_ms": 707.7355909932521,
+        "p95_ms": 825.7426709998981,
+        "mean_forward_estimate": 1.04,
+        "early_exits": 24,
+        "early_exits_correct": 24,
+        "execution_paths": {
+          "NATIVE_ATOMIC_EARLY_EXIT": 24,
+          "NATIVE_TOOL_CALL": 1
+        }
+      },
+      "paired_mean_saved_ms": 277.3542270003236,
+      "paired_median_saved_ms": 292.2493320074864,
+      "paired_saved_ms_iqr": [
+        283.76698099600617,
+        297.9879959966638
+      ],
+      "both_correct_n": 25,
+      "both_correct_mean_saved_ms": 277.3542270003236,
+      "paired_mean_saved_ms_ci95": [
+        247.61035700462693,
+        294.47813911399703
+      ],
+      "relative_mean_latency_reduction": 0.28321674507367883,
+      "accuracy_delta": 0,
+      "accuracy_delta_ci95": null,
+      "accuracy_delta_interval_note": "All observed paired accuracy differences are zero; a resampling interval would be degenerate and is not a risk bound",
+      "improved": 0,
+      "regressed": 0
+    },
+    "no_tool": {
+      "n": 120,
+      "matching_content_and_call": 120,
+      "base": {
+        "accuracy": 0.875,
+        "name_accuracy": null,
+        "mean_ms": 3791.164229666962,
+        "p50_ms": 3389.5836074989347,
+        "p95_ms": 7120.67830909873,
+        "mean_forward_estimate": 10.275,
+        "execution_paths": {
+          "NATIVE_DIRECT_RESPONSE": 105,
+          "NATIVE_TOOL_CALL": 15
+        }
+      },
+      "reflex_1": {
+        "accuracy": 0.875,
+        "name_accuracy": null,
+        "mean_ms": 3818.4681849753056,
+        "p50_ms": 3399.650027502503,
+        "p95_ms": 7192.615316504452,
+        "mean_forward_estimate": 10.241666666666667,
+        "early_exits": 4,
+        "early_exits_correct": 0,
+        "execution_paths": {
+          "NATIVE_DIRECT_RESPONSE": 105,
+          "NATIVE_TOOL_CALL": 11,
+          "NATIVE_ATOMIC_EARLY_EXIT": 4
+        }
+      },
+      "paired_mean_saved_ms": -27.303955308343575,
+      "paired_median_saved_ms": 1.2309254962019622,
+      "paired_saved_ms_iqr": [
+        -13.680087999091484,
+        18.247372501718928
+      ],
+      "both_correct_n": 105,
+      "both_correct_mean_saved_ms": -41.131238857079076,
+      "paired_mean_saved_ms_ci95": [
+        -107.05282179230772,
+        16.516430258663227
+      ],
+      "relative_mean_latency_reduction": -0.007201997501105911,
+      "accuracy_delta": 0,
+      "accuracy_delta_ci95": null,
+      "accuracy_delta_interval_note": "All observed paired accuracy differences are zero; a resampling interval would be degenerate and is not a risk bound",
+      "improved": 0,
+      "regressed": 0
+    },
+    "no_tool_other": {
+      "n": 77,
+      "matching_content_and_call": 77,
+      "base": {
+        "accuracy": 0.8831168831168831,
+        "name_accuracy": null,
+        "mean_ms": 4239.8563202990445,
+        "p50_ms": 4287.733498997113,
+        "p95_ms": 7561.754464401749,
+        "mean_forward_estimate": 11.792207792207792,
+        "execution_paths": {
+          "NATIVE_DIRECT_RESPONSE": 68,
+          "NATIVE_TOOL_CALL": 9
+        }
+      },
+      "reflex_1": {
+        "accuracy": 0.8831168831168831,
+        "name_accuracy": null,
+        "mean_ms": 4237.1080019611445,
+        "p50_ms": 4274.894449001295,
+        "p95_ms": 7542.8142796023185,
+        "mean_forward_estimate": 11.792207792207792,
+        "early_exits": 0,
+        "early_exits_correct": 0,
+        "execution_paths": {
+          "NATIVE_DIRECT_RESPONSE": 68,
+          "NATIVE_TOOL_CALL": 9
+        }
+      },
+      "paired_mean_saved_ms": 2.7483183378996268,
+      "paired_median_saved_ms": 5.780583000159822,
+      "paired_saved_ms_iqr": [
+        -14.201031990523916,
+        20.862475998001173
+      ],
+      "both_correct_n": 68,
+      "both_correct_mean_saved_ms": 5.249332735676195,
+      "paired_mean_saved_ms_ci95": [
+        -3.7931130304732124,
+        8.606637305050072
+      ],
+      "relative_mean_latency_reduction": 0.0006482102529610681,
+      "accuracy_delta": 0,
+      "accuracy_delta_ci95": null,
+      "accuracy_delta_interval_note": "All observed paired accuracy differences are zero; a resampling interval would be degenerate and is not a risk bound",
+      "improved": 0,
+      "regressed": 0
+    },
+    "no_tool_atomic_distractor": {
+      "n": 43,
+      "matching_content_and_call": 43,
+      "base": {
+        "accuracy": 0.8604651162790697,
+        "name_accuracy": null,
+        "mean_ms": 2987.692346442071,
+        "p50_ms": 2700.3966699994635,
+        "p95_ms": 5854.227745301613,
+        "mean_forward_estimate": 7.558139534883721,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 6,
+          "NATIVE_DIRECT_RESPONSE": 37
+        }
+      },
+      "reflex_1": {
+        "accuracy": 0.8604651162790697,
+        "name_accuracy": null,
+        "mean_ms": 3068.810838279734,
+        "p50_ms": 2720.330235999427,
+        "p95_ms": 6322.7377375013,
+        "mean_forward_estimate": 7.465116279069767,
+        "early_exits": 4,
+        "early_exits_correct": 0,
+        "execution_paths": {
+          "NATIVE_TOOL_CALL": 2,
+          "NATIVE_DIRECT_RESPONSE": 37,
+          "NATIVE_ATOMIC_EARLY_EXIT": 4
+        }
+      },
+      "paired_mean_saved_ms": -81.1184918376628,
+      "paired_median_saved_ms": -3.06932300736662,
+      "paired_saved_ms_iqr": [
+        -13.021944996580714,
+        8.529816997906892
+      ],
+      "both_correct_n": 37,
+      "both_correct_mean_saved_ms": -126.37120827079147,
+      "paired_mean_saved_ms_ci95": [
+        -308.03004699054327,
+        42.20782081523015
+      ],
+      "relative_mean_latency_reduction": -0.027150885175397568,
+      "accuracy_delta": 0,
+      "accuracy_delta_ci95": null,
+      "accuracy_delta_interval_note": "All observed paired accuracy differences are zero; a resampling interval would be degenerate and is not a risk bound",
+      "improved": 0,
+      "regressed": 0
+    }
+  },
+  "atomic_ablation": {
+    "reflex_1": {
+      "n": 25,
+      "correct": 25,
+      "mean_ms": 701.9460150392842,
+      "p50_ms": 707.7355909932521,
+      "p95_ms": 825.7426709998981,
+      "mean_forward_estimate": 1.04,
+      "early_exits": 24
+    },
+    "reflex_2": {
+      "n": 25,
+      "correct": 25,
+      "mean_ms": 975.8422359600081,
+      "p50_ms": 994.59719099832,
+      "p95_ms": 1085.0420356015093,
+      "mean_forward_estimate": 2,
+      "early_exits": 24
+    },
+    "reflex_3": {
+      "n": 25,
+      "correct": 25,
+      "mean_ms": 977.1504218401969,
+      "p50_ms": 999.1036959982011,
+      "p95_ms": 1085.344524201355,
+      "mean_forward_estimate": 2,
+      "early_exits": 0
+    },
+    "base": {
+      "n": 25,
+      "correct": 25,
+      "mean_ms": 979.3002420396078,
+      "p50_ms": 1002.2965149983065,
+      "p95_ms": 1084.7677256009774,
+      "mean_forward_estimate": 2,
+      "early_exits": 0
+    }
+  },
+  "bootstrap_unit": "normalized exact query"
+}
