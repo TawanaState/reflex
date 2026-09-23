@@ -23,11 +23,16 @@ class Settings(BaseSettings):
         description="Path to fine-tuned Reflex LoRA adapter",
     )
 
-    # Runtime mode: 'reflex' (hybrid micro-canvas + conformal gate + expansion) or 'vanilla' (fixed multi-step)
+    # Runtime mode: native tool calling with optional atomic draft exit, or fixed-step baseline
     REFLEX_MODE: Literal["reflex", "vanilla"] = Field(
         default="reflex",
         description="Runtime mode ('reflex' or 'vanilla')",
     )
+
+    # Native draft early exit. Stable draft count is a heuristic until calibrated
+    # on an independent held-out set; confidence is therefore reported as 0.
+    REFLEX_ATOMIC_EARLY_EXIT: bool = Field(default=True)
+    REFLEX_ATOMIC_STABLE_STEPS: int = Field(default=1, ge=1)
 
     # Server binding
     HOST: str = Field(

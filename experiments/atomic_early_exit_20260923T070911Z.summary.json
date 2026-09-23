@@ -1,0 +1,13 @@
+{
+  "run_id": "20260923T070911Z",
+  "trace_path": "/home/tawana/research/reflex/experiments/atomic_early_exit_20260923T070911Z.jsonl",
+  "total": 25,
+  "correct": 25,
+  "accuracy": 1.0,
+  "early_exits": 24,
+  "mean_latency_ms": 697.1818210798665,
+  "p50_latency_ms": 707.4089020024985,
+  "p95_latency_ms": 797.9947468003957,
+  "mean_warm_latency_ms_excluding_first": 693.1390183747984,
+  "mean_steps": 1.04
+}

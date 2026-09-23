@@ -1,0 +1,87 @@
+{
+  "run_id": "20260923T072121Z",
+  "server_health": {
+    "status": "healthy",
+    "mode": "reflex",
+    "model": "/home/tawana/.cache/huggingface/hub/models--google--diffusiongemma-26B-A4B-it/snapshots/f7f5b7f5fa82ffc52addd066915886d497f5517b",
+    "adapter_loaded": false,
+    "device": "cuda:0",
+    "gpu_memory_allocated_gb": 48.13,
+    "gpu_device_name": "NVIDIA GB10",
+    "port": 8090
+  },
+  "num_trials_per_case": 1,
+  "trace_file": "/home/tawana/research/reflex/experiments/tiered_latency_traces_20260923T072121Z.jsonl",
+  "cases": {
+    "atomic": {
+      "gold_tool": "mute_audio",
+      "gold_tier": "atomic",
+      "call_correct": 1,
+      "total": 1,
+      "call_accuracy": 1.0,
+      "all_wall_latency_ms": {
+        "count": 1,
+        "mean": 515.3014660027111,
+        "p50": 515.3014660027111,
+        "p95": 515.3014660027111
+      },
+      "correct_call_wall_latency_ms": {
+        "count": 1,
+        "mean": 515.3014660027111,
+        "p50": 515.3014660027111,
+        "p95": 515.3014660027111
+      },
+      "all_engine_latency_ms": {
+        "count": 1,
+        "mean": 513.62,
+        "p50": 513.62,
+        "p95": 513.62
+      }
+    },
+    "primitive": {
+      "gold_tool": "set_volume",
+      "gold_tier": "parametric_primitive",
+      "call_correct": 1,
+      "total": 1,
+      "call_accuracy": 1.0,
+      "all_wall_latency_ms": {
+        "count": 1,
+        "mean": 795.8888339999248,
+        "p50": 795.8888339999248,
+        "p95": 795.8888339999248
+      },
+      "correct_call_wall_latency_ms": {
+        "count": 1,
+        "mean": 795.8888339999248,
+        "p50": 795.8888339999248,
+        "p95": 795.8888339999248
+      },
+      "all_engine_latency_ms": {
+        "count": 1,
+        "mean": 793.98,
+        "p50": 793.98,
+        "p95": 793.98
+      }
+    },
+    "generative": {
+      "gold_tool": "write_email",
+      "gold_tier": "generative_synthesis",
+      "call_correct": 0,
+      "total": 1,
+      "call_accuracy": 0.0,
+      "all_wall_latency_ms": {
+        "count": 1,
+        "mean": 3234.0304810059024,
+        "p50": 3234.0304810059024,
+        "p95": 3234.0304810059024
+      },
+      "correct_call_wall_latency_ms": null,
+      "all_engine_latency_ms": {
+        "count": 1,
+        "mean": 3232.25,
+        "p50": 3232.25,
+        "p95": 3232.25
+      }
+    }
+  }
+}

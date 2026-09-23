@@ -1,25 +1,11 @@
 """
 Execution Runner for Project Reflex.
 
-2026-09-22 architecture change: tool routing and argument synthesis now go
-through DiffusionGemma's OWN trained function-calling format and the OFFICIAL
-model.generate() (its EntropyBoundSampler-driven block-diffusion loop), instead of a custom "select a
-tool index into <unusedN>" micro-canvas plus a hand-written deterministic
-numeric extractor. On a frozen, independent, 1,051-example held-out BFCL-
-derived routing set (data/bfcl/live_eval.jsonl; disjoint source file from the
-one used for LoRA training, zero query overlap), this native approach reached
-93.3% tool-name accuracy (93.1% under a deterministic candidate-order
-permutation -- i.e. no positional shortcut) and ~77% fully-correct calls
-(right tool AND valid arguments, including free-text and nested-object
-arguments) with NO training at all. See RESULTS.md and
-experiments/native_tool_routing_*.summary.json for the measured evidence.
-The old scheme scored 0/5 on free-text arguments and used a deterministic
-regex extractor (not learned synthesis) for numeric ones; it is preserved
-for archival inspection in git history but is no longer the serving path.
-
-Because tool selection and argument synthesis now happen in a single
-model.generate() call, there is no longer a separate Phase-1/Phase-2 KV-reuse
-handoff to manage: the official generation loop owns its own caching.
+Native tool routing uses DiffusionGemma's trained function-call format and
+official sampler. Its draft streamer exposes intermediate denoising canvases.
+An atomic call may exit that same generation after a complete native call is
+stable; all other outputs continue through the official sampler. See
+RESULTS.md for the measured baseline and the status of early-exit evidence.
 """
 
 import base64
@@ -40,6 +26,7 @@ from transformers import AutoProcessor, AutoTokenizer, DiffusionGemmaForBlockDif
 
 from ..config import Settings, get_settings
 from ..schema.inspector import Tier, inspect_tool_schema
+from .early_exit import AtomicToolReady, NativeDraftObserver
 from .native_tool_calling import (
     build_native_tools,
     parse_gemma_tool_call,
@@ -237,19 +224,21 @@ class ReflexEngine:
         return tensor_inputs
 
     @staticmethod
-    def _estimate_forward_passes(generation_output: Any, completion_tokens: int) -> int:
-        """Recovers the real decoder forward-pass count from the official
-        generate() output (tokens_per_forward = valid_tokens / forward_passes,
-        per transformers' _compute_tokens_per_forward), instead of reporting a
-        step count that was never actually executed. Falls back to a
-        conservative 1-pass-per-token estimate if the field is unavailable."""
+    def _estimate_forward_passes(generation_output: Any, generated_ids: torch.Tensor, pad_token_id: int) -> int:
+        """Recover the decoder forward count from official generation output.
+
+        ``tokens_per_forward`` uses non-pad generated tokens as its numerator.
+        The returned block is always canvas-sized, so using its raw width here
+        would substantially over-report the denoising work.
+        """
+        valid_tokens = int((generated_ids != pad_token_id).sum().item())
         tokens_per_forward = getattr(generation_output, "tokens_per_forward", None)
-        if tokens_per_forward is None or completion_tokens == 0:
-            return max(completion_tokens, 1)
+        if tokens_per_forward is None or valid_tokens == 0:
+            return max(valid_tokens, 1)
         ratio = float(tokens_per_forward.reshape(-1)[0].item())
         if ratio <= 0:
-            return max(completion_tokens, 1)
-        return max(1, round(completion_tokens / ratio))
+            return max(valid_tokens, 1)
+        return max(1, round(valid_tokens / ratio))
 
     _THOUGHT_CHANNEL_RE = re.compile(r"<\|channel>thought.*?<channel\|>", re.DOTALL)
     _ANGLE_TAG_RE = re.compile(r"<[^<>]{1,64}>")
@@ -359,32 +348,64 @@ class ReflexEngine:
         # tool-schema tier (e.g. 48 for atomic-only menus) intending to save
         # compute; measured completion_tokens showed this had NO effect below
         # one block (still 256 tokens generated either way), so it has been
-        # removed rather than left in as a fake optimization. The real
-        # adaptive-compute signal in this architecture is the number of
-        # denoising steps the official sampler's own entropy-based stopping
-        # criterion uses within a block (see steps_executed in the response
-        # metadata, and RESULTS.md) -- that varies genuinely with request
-        # difficulty and is not something this method controls.
+        # removed rather than left in as a fake optimization. The full path
+        # retains the official sampler's entropy-based stopping. Reflex adds a
+        # stricter first-draft exit only for complete argument-free calls.
         canvas_length = getattr(self.model.config, "canvas_length", 256)
         gen_budget = min(max_tokens, canvas_length) if max_tokens else canvas_length
 
         tensor_inputs = self._build_native_chat_inputs(parsed_messages, images, tools)
         prompt_len = tensor_inputs["input_ids"].shape[1]
 
+        atomic_names = {
+            name for name, tool in tool_by_name.items()
+            if inspect_tool_schema(tool).tier == Tier.ATOMIC
+        }
+        observer = NativeDraftObserver(
+            tokenizer=self.tokenizer,
+            atomic_names=atomic_names,
+            stable_steps_required=self.settings.REFLEX_ATOMIC_STABLE_STEPS,
+            enable_exit=self.settings.REFLEX_ATOMIC_EARLY_EXIT,
+        ) if atomic_names and self.settings.REFLEX_ATOMIC_EARLY_EXIT else None
+
         with torch.inference_mode():
             generation_kwargs = {k: v for k, v in tensor_inputs.items() if k not in ("input_ids", "attention_mask")}
-            gen_out = self.model.generate(
-                input_ids=tensor_inputs["input_ids"],
-                attention_mask=tensor_inputs.get("attention_mask"),
-                max_new_tokens=gen_budget,
-                **generation_kwargs,
-            )
+            try:
+                gen_out = self.model.generate(
+                    input_ids=tensor_inputs["input_ids"],
+                    attention_mask=tensor_inputs.get("attention_mask"),
+                    max_new_tokens=gen_budget,
+                    streamer=observer,
+                    **generation_kwargs,
+                )
+            except AtomicToolReady:
+                if observer is None or observer.accepted_name not in atomic_names:
+                    raise
+                name = observer.accepted_name
+                return EngineOutput(
+                    content=None,
+                    tool_calls=[{
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": "{}"},
+                    }],
+                    finish_reason="tool_calls",
+                    execution_path="NATIVE_ATOMIC_EARLY_EXIT",
+                    tier=Tier.ATOMIC.value,
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                    # Draft stability has not been calibrated as a probability.
+                    confidence=0.0,
+                    steps_executed=observer.step,
+                    prompt_tokens=prompt_len,
+                    completion_tokens=canvas_length,
+                    candidate_action=name,
+                )
 
         sequences = gen_out.sequences if hasattr(gen_out, "sequences") else gen_out
         gen_ids = sequences[0, prompt_len:]
         raw_text = self.tokenizer.decode(gen_ids, skip_special_tokens=False)
         completion_tokens = int(gen_ids.shape[0])
-        forward_passes = self._estimate_forward_passes(gen_out, completion_tokens)
+        forward_passes = self._estimate_forward_passes(gen_out, gen_ids, self.pad_token_id)
         total_lat = (time.perf_counter() - t0) * 1000.0
 
         tool_name, raw_args = parse_gemma_tool_call(raw_text)

@@ -344,12 +344,14 @@ async def reload_runtime():
     import src.schema.inspector as s_insp
     import src.schema as s_pkg
     import src.engine.native_tool_calling as e_native
+    import src.engine.early_exit as e_early_exit
     import src.engine.runner as e_run
     import src.engine as e_pkg
 
     importlib.reload(s_insp)
     importlib.reload(s_pkg)
     importlib.reload(e_native)
+    importlib.reload(e_early_exit)
     importlib.reload(e_run)
     importlib.reload(e_pkg)
 
